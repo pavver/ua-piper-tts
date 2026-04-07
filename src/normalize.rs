@@ -114,6 +114,9 @@ fn int_to_ua(unsigned: &str) -> String {
             .to_words()
             .unwrap_or(unsigned.to_string())
             .replace('ʼ', "'")
+            // num2words баг: "один цілих" → "один цілий"
+            .replace("один цілих", "один цілий")
+            .replace("два цілих", "дві цілих")
     } else {
         unsigned.to_string()
     }
