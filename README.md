@@ -4,8 +4,11 @@ Rust-проект для генерації аудіо з тексту укра�
 
 ## Як це працює
 
-Rust-код викликає **Piper TTS** (CLI) через subprocess для синтезу мовлення.
-Piper — це швидка нейронна система TTS яка працює на CPU без підключення до інтернету.
+Rust викликає **Piper TTS** (CLI) через subprocess. 
+Перед синтезом текст нормалізується Python-скриптом (`num2words`):
+- Числа → українські слова (25 → "двадцять п'ять")
+- Спецсимволи → слова (°C → "градусів цельсія")
+- Великі літери → маленькі (модель не підтримує uppercase)
 
 ## Моделі
 
@@ -13,137 +16,63 @@ Piper — це швидка нейронна система TTS яка прац�
 |--------|---------|--------|
 | `piper-uk_UK-dmytro-medium` | 3 (lada, mykyta, tetiana) | Хороша |
 
-### Спікери
-- **speaker_0 (lada)** — жіночий голос
-- **speaker_1 (mykyta)** — чоловічий голос
-- **speaker_2 (tetiana)** — жіночий голос (за замовчуванням)
+За замовчуванням використовується **speaker_2 (tetiana)** — жіночий голос.
 
-## Встановлення на новій машині
+## Встановлення
 
-### Системні вимоги
+### Вимоги
+- Linux (x86_64 або aarch64)
+- Python 3.8+
+- Rust 1.70+
 
-- **ОС:** Linux (x86_64 або aarch64)
-- **Python:** 3.8+ (для встановлення piper-tts)
-- **Rust:** 1.70+
-- **Інтернет:** для завантаження моделей (~74 MB)
-
-### Крок 1: Встановіть Rust
+### Крок 1: Встановіть залежності
 
 ```bash
+# Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source "$HOME/.cargo/env"
+
+# Piper TTS + нормалізація
+pip3 install piper-tts num2words
 ```
 
-### Крок 2: Встановіть Piper TTS
+### Крок 2: Клонуйте та завантажте модель
 
 ```bash
-pip3 install piper-tts
-```
-
-Якщо використовуєте системний Python (Debian/Ubuntu):
-```bash
-pip3 install --break-system-packages piper-tts
-# або в віртуальному середовищі:
-python3 -m venv .venv
-source .venv/bin/activate
-pip3 install piper-tts
-```
-
-Це встановить `piper` CLI бінарник.
-
-### Крок 3: Клонуйте репозиторій
-
-```bash
-git clone <url-репозиторію>
+git clone <url>
 cd sherpa-ua-tts
-```
-
-### Крок 4: Завантажте модель
-
-```bash
 chmod +x download_models.sh
-./download_models.sh
+./download_models.sh  # ~74 MB
 ```
 
-Це завантажить модель Piper для української мови (~74 MB) у директорію `models/`.
-
-### Крок 5: Зберіть та запустіть
+### Крок 3: Запуск
 
 ```bash
 cargo run
 ```
 
-Готові WAV-файли з'являться у директорії `output/`:
-- `piper_ukrainian_tts_speaker_0.wav` — lada
-- `piper_ukrainian_tts_speaker_1.wav` — mykyta
-- `piper_ukrainian_tts_speaker_2.wav` — tetiana
+Результат: `output/piper_ukrainian_tts_speaker_2.wav`
 
-## Структура проекту
+## Зміна тексту та спікера
 
-```
-├── Cargo.toml              # Залежності
-├── src/main.rs             # Rust код (виклик Piper CLI через subprocess)
-├── download_models.sh      # Скрипт завантаження моделей
-├── models/                 # Завантажені моделі (в gitignore)
-│   └── piper-uk_UK-dmytro-medium/
-│       ├── model.onnx          # ONNX модель Piper
-│       ├── model.onnx.json     # Конфігурація моделі
-│       └── espeak-ng-data/     # Дані espeak-ng для фонемізації
-├── output/                 # Згенеровані WAV файли (в gitignore)
-└── README.md
-```
-
-## Використання
-
-### Зміна тексту
-
-Відредагуйте змінну `text` у `src/main.rs`:
+У `src/main.rs`:
 
 ```rust
-let text = "Ваш текст українською мовою.";
+let text = "Ваш текст українською.";
+const SPEAKER_ID: i32 = 2; // 0=lada, 1=mykyta, 2=tetiana
 ```
 
-### Використання Piper CLI напряму
+## Підтримувані спецсимволи
 
-```bash
-# Спікер 0 (lada)
-echo "текст" | piper --model models/piper-uk_UK-dmytro-medium/model.onnx \
-    --config models/piper-uk_UK-dmytro-medium/model.onnx.json \
-    --output_file output.wav --speaker 0
-
-# Спікер 1 (mykyta)
-echo "текст" | piper --model models/piper-uk_UK-dmytro-medium/model.onnx \
-    --config models/piper-uk_UK-dmytro-medium/model.onnx.json \
-    --output_file output.wav --speaker 1
-
-# Спікер 2 (tetiana)
-echo "текст" | piper --model models/piper-uk_UK-dmytro-medium/model.onnx \
-    --config models/piper-uk_UK-dmytro-medium/model.onnx.json \
-    --output_file output.wav --speaker 2
-```
-
-### Збірка release-версії
-
-```bash
-cargo build --release
-./target/release/sherpa-ua-tts
-```
-
-## Відомі обмеження
-
-1. **Великі літери:** Модель не підтримує великі літери. Текст автоматично конвертується в нижній регістр перед синтезом.
-
-## Залежності
-
-| Компонент | Версія | Призначення |
-|-----------|--------|-------------|
-| Rust | 1.70+ | Компіляція проекту |
-| Python | 3.8+ | Встановлення piper-tts (pip3 install piper-tts) |
-| piper-tts | будь-яка | Надає Piper CLI бінарник |
-| onnxruntime | (автоматично) | ONNX інференс |
-| curl | будь-яка | Завантаження моделей |
+| Ввід | Вимовляється як |
+|------|-----------------|
+| `25°C` | двадцять п'ять градусів цельсія |
+| `-5°C` | мінус п'ять градусів цельсія |
+| `100%` | сто відсотків |
+| `$50` | п'ятдесят доларів |
+| `#123` | номер сто двадцять три |
+| `3.14` | три кома чотирнадцять |
 
 ## Ліцензія
 
-- Код проекту: без обмежень
-- Модель Piper: перевіряйте [MODEL_CARD](https://huggingface.co/rhasspy/piper-voices) у репозиторії Piper Voices
+Код — без обмежень. Модель — [Piper Voices](https://huggingface.co/rhasspy/piper-voices).
