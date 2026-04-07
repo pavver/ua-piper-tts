@@ -129,7 +129,8 @@
       "Bash(result)",
       "Bash(chunks)",
       "Bash(chunk *)",
-      "Bash(else *)"
+      "Bash(else *)",
+      "Bash(mkdir *)"
     ]
   },
   "$version": 3

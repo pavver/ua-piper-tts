@@ -4,7 +4,7 @@ Rust-проект для генерації аудіо з тексту укра�
 
 ## Як це працює
 
-Rust-код викликає Python-скрипт `tts_synth.py`, який використовує бібліотеку **Piper TTS** для синтезу мовлення.
+Rust-код викликає **Piper TTS** (CLI) через subprocess для синтезу мовлення.
 Piper — це швидка нейронна система TTS яка працює на CPU без підключення до інтернету.
 
 ## Моделі
@@ -23,7 +23,7 @@ Piper — це швидка нейронна система TTS яка прац�
 ### Системні вимоги
 
 - **ОС:** Linux (x86_64 або aarch64)
-- **Python:** 3.8+
+- **Python:** 3.8+ (для встановлення piper-tts)
 - **Rust:** 1.70+
 - **Інтернет:** для завантаження моделей (~74 MB)
 
@@ -48,6 +48,8 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip3 install piper-tts
 ```
+
+Це встановить `piper` CLI бінарник.
 
 ### Крок 3: Клонуйте репозиторій
 
@@ -80,8 +82,7 @@ cargo run
 
 ```
 ├── Cargo.toml              # Залежності
-├── src/main.rs             # Rust код (виклик Python subprocess)
-├── tts_synth.py            # Python скрипт для синтезу мови
+├── src/main.rs             # Rust код (виклик Piper CLI через subprocess)
 ├── download_models.sh      # Скрипт завантаження моделей
 ├── models/                 # Завантажені моделі (в gitignore)
 │   └── piper-uk_UK-dmytro-medium/
@@ -102,19 +103,23 @@ cargo run
 let text = "Ваш текст українською мовою.";
 ```
 
-### Використання окремого спікера
-
-Запустіть Python-скрипт напряму:
+### Використання Piper CLI напряму
 
 ```bash
 # Спікер 0 (lada)
-python3 tts_synth.py "текст" output.wav 0
+echo "текст" | piper --model models/piper-uk_UK-dmytro-medium/model.onnx \
+    --config models/piper-uk_UK-dmytro-medium/model.onnx.json \
+    --output_file output.wav --speaker 0
 
 # Спікер 1 (mykyta)
-python3 tts_synth.py "текст" output.wav 1
+echo "текст" | piper --model models/piper-uk_UK-dmytro-medium/model.onnx \
+    --config models/piper-uk_UK-dmytro-medium/model.onnx.json \
+    --output_file output.wav --speaker 1
 
 # Спікер 2 (tetiana)
-python3 tts_synth.py "текст" output.wav 2
+echo "текст" | piper --model models/piper-uk_UK-dmytro-medium/model.onnx \
+    --config models/piper-uk_UK-dmytro-medium/model.onnx.json \
+    --output_file output.wav --speaker 2
 ```
 
 ### Збірка release-версії
@@ -127,15 +132,14 @@ cargo build --release
 ## Відомі обмеження
 
 1. **Великі літери:** Модель не підтримує великі літери. Текст автоматично конвертується в нижній регістр перед синтезом.
-2. **Piper CLI:** Piper CLI генерує пошкоджене аудіо на деяких системах. Тому проект використовує Python бібліотеку `piper-tts` напряму через subprocess.
 
 ## Залежності
 
 | Компонент | Версія | Призначення |
 |-----------|--------|-------------|
 | Rust | 1.70+ | Компіляція проекту |
-| Python | 3.8+ | Виконання tts_synth.py |
-| piper-tts | будь-яка | Нейронний синтез мови |
+| Python | 3.8+ | Встановлення piper-tts (pip3 install piper-tts) |
+| piper-tts | будь-яка | Надає Piper CLI бінарник |
 | onnxruntime | (автоматично) | ONNX інференс |
 | curl | будь-яка | Завантаження моделей |
 
