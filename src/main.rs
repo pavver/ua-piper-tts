@@ -1,4 +1,6 @@
-use std::env;
+mod normalize;
+
+use normalize::normalize_text;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -12,7 +14,7 @@ const MODELS: &[(&str, &str)] = &[(
 const SPEAKER_ID: i32 = 2; // tetiana — жіночий голос
 
 fn main() {
-    let text = "Привіт, як у тебе справи? Сьогодні гарний день!";
+    let text = "Зараз температура 125°C, а вчора було 36.6°C";
     let output_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("output");
     fs::create_dir_all(&output_dir).expect("Не вдалося створити директорію output");
 
@@ -20,12 +22,11 @@ fn main() {
     println!("Текст: {}", text);
     println!();
 
-    // Нормалізуємо текст (числа → слова, великі → маленькі)
     let normalized = normalize_text(text);
     println!("Нормалізований: {}", normalized);
     println!();
 
-    let piper_bin = find_piper().expect("piper не знайдено! Встановіть: pip3 install piper-tts");
+    let piper_bin = find_piper().expect("piper не знайдено! pip3 install piper-tts");
 
     for (short_name, model_name) in MODELS {
         let model_dir = get_model_path(model_name);
@@ -34,12 +35,11 @@ fn main() {
 
         if !model_onnx.exists() {
             eprintln!("[{}] Модель не знайдена: {:?}", short_name, model_onnx);
-            eprintln!("     Запустіть: ./download_models.sh");
+            eprintln!("     ./download_models.sh");
             continue;
         }
 
         let output_path = output_dir.join(format!("{}_speaker_{}.wav", short_name, SPEAKER_ID));
-
         println!("--- Модель: {} (speaker {}) ---", short_name, SPEAKER_ID);
 
         let result = Command::new(&piper_bin)
@@ -69,25 +69,7 @@ fn main() {
         println!();
     }
 
-    println!("=== Готово! Перевірте файли у: {:?}", output_dir);
-}
-
-fn normalize_text(text: &str) -> String {
-    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("normalize_text.py");
-    if !script.exists() {
-        // Fallback: просто нижній регістр
-        return text.to_lowercase();
-    }
-    let output = Command::new("python3")
-        .arg(&script)
-        .arg(text)
-        .output();
-    match output {
-        Ok(out) if out.status.success() => {
-            String::from_utf8_lossy(&out.stdout).trim().to_string()
-        }
-        _ => text.to_lowercase(),
-    }
+    println!("=== Готово! {:?}", output_dir);
 }
 
 fn get_model_path(model_name: &str) -> PathBuf {
@@ -98,13 +80,13 @@ fn get_model_path(model_name: &str) -> PathBuf {
 }
 
 fn find_piper() -> Option<PathBuf> {
-    for candidate in &["piper", "/home/radxa/.local/bin/piper"] {
-        let path = PathBuf::from(candidate);
-        if path.exists() { return Some(path); }
-        if let Ok(out) = Command::new("which").arg(candidate).output() {
-            if out.status.success() {
-                let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if !p.is_empty() { return Some(PathBuf::from(p)); }
+    for c in &["piper", "/home/radxa/.local/bin/piper"] {
+        let p = PathBuf::from(c);
+        if p.exists() { return Some(p); }
+        if let Ok(o) = Command::new("which").arg(c).output() {
+            if o.status.success() {
+                let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if !s.is_empty() { return Some(PathBuf::from(s)); }
             }
         }
     }

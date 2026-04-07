@@ -5,3 +5,7 @@ edition = "2024"
 
 [dependencies]
 hound = "3.5"
+
+[profile.release]
+lto = true
+strip = true
