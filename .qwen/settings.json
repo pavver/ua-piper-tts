@@ -109,7 +109,27 @@
       "Bash(wav_file.setsampwidth)",
       "Bash(wav_file.setframerate)",
       "Bash(apt-get *)",
-      "Bash(piper *)"
+      "Bash(piper *)",
+      "Bash(\"привіт, як у тебе справи? сьогодні гарний день!\",)",
+      "Bash(\"сьогодні\",)",
+      "Bash(\"йогодні\",)",
+      "Bash(try:)",
+      "Bash(phonemes *)",
+      "Bash(except *)",
+      "Bash(\"сь огодні\",)",
+      "Bash(\"сь-огодні\",)",
+      "Bash(\"сь огоднi\",)",
+      "Bash(pyeof)",
+      "Bash(espeak-ng *)",
+      "Bash(xxd)",
+      "Bash(sudo *)",
+      "Bash(reverse_map *)",
+      "Bash(k)",
+      "Bash(chunks *)",
+      "Bash(result)",
+      "Bash(chunks)",
+      "Bash(chunk *)",
+      "Bash(else *)"
     ]
   },
   "$version": 3
