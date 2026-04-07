@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 hound = "3.5"
+num2words = "1.2"
 
 [profile.release]
 lto = true
