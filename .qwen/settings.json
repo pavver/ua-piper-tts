@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(uname *)",
+      "Bash(cat *)",
+      "WebFetch(k2-fsa.github.io)",
+      "WebFetch(huggingface.co)",
+      "Bash(cargo *)",
+      "Bash(git init)",
+      "Bash(true)",
+      "Bash(find *)",
+      "Read(//home/radxa/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sherpa-onnx-0.1.13/src/**)",
+      "Bash(chmod *)",
+      "Bash(/home/radxa/.config/aionui/aionui/qwen-temp-1775587040627/download_models.sh)",
+      "Bash(file *)",
+      "Bash(do *)",
+      "Bash(done)",
+      "Bash(git add *)"
+    ]
+  },
+  "$version": 3
+}
