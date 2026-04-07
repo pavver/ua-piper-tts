@@ -1,94 +1,80 @@
 mod normalize;
+mod server;
 
-use normalize::normalize_text;
-use std::fs;
+use serde::Deserialize;
 use std::path::PathBuf;
-use std::process::Command;
-use std::io::Write;
 
-const MODELS: &[(&str, &str)] = &[(
-    "piper_ukrainian_tts",
-    "piper-uk_UK-dmytro-medium",
-)];
-
-const SPEAKER_ID: i32 = 2; // tetiana — жіночий голос
-
-fn main() {
-    let text = "Зараз температура 125°C, а вчора було 36.6°C";
-    let output_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("output");
-    fs::create_dir_all(&output_dir).expect("Не вдалося створити директорію output");
-
-    println!("=== Piper Ukrainian TTS Test ===");
-    println!("Текст: {}", text);
-    println!();
-
-    let normalized = normalize_text(text);
-    println!("Нормалізований: {}", normalized);
-    println!();
-
-    let piper_bin = find_piper().expect("piper не знайдено! pip3 install piper-tts");
-
-    for (short_name, model_name) in MODELS {
-        let model_dir = get_model_path(model_name);
-        let model_onnx = model_dir.join("model.onnx");
-        let model_json = model_dir.join("model.onnx.json");
-
-        if !model_onnx.exists() {
-            eprintln!("[{}] Модель не знайдена: {:?}", short_name, model_onnx);
-            eprintln!("     ./download_models.sh");
-            continue;
-        }
-
-        let output_path = output_dir.join(format!("{}_speaker_{}.wav", short_name, SPEAKER_ID));
-        println!("--- Модель: {} (speaker {}) ---", short_name, SPEAKER_ID);
-
-        let result = Command::new(&piper_bin)
-            .arg("--model").arg(&model_onnx)
-            .arg("--config").arg(&model_json)
-            .arg("--output_file").arg(&output_path)
-            .arg("--speaker").arg(SPEAKER_ID.to_string())
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .spawn();
-
-        match result {
-            Ok(mut child) => {
-                if let Some(mut stdin) = child.stdin.take() {
-                    let _ = stdin.write_all(normalized.as_bytes());
-                }
-                let status = child.wait().expect("Не вдалося дочекатись piper");
-                if status.success() && output_path.exists() {
-                    let size = fs::metadata(&output_path).unwrap().len();
-                    println!("  Збережено: {} ({} байт)", output_path.display(), size);
-                } else {
-                    eprintln!("  Помилка генерації");
-                }
-            }
-            Err(e) => eprintln!("  Помилка запуску piper: {}", e),
-        }
-        println!();
-    }
-
-    println!("=== Готово! {:?}", output_dir);
+#[derive(Deserialize, Clone)]
+pub struct AppConfig {
+    pub output_dir: String,
+    pub port: u16,
+    pub host: String,
+    pub speaker_id: i32,
+    pub model_dir: String,
 }
 
-fn get_model_path(model_name: &str) -> PathBuf {
-    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.push("models");
-    path.push(model_name);
-    path
+impl AppConfig {
+    pub fn load(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let content = std::fs::read_to_string(path)?;
+        let config: AppConfig = serde_json::from_str(&content)?;
+        Ok(config)
+    }
+
+    pub fn output_path(&self) -> PathBuf {
+        PathBuf::from(&self.output_dir)
+    }
+
+    pub fn model_dir(&self) -> PathBuf {
+        PathBuf::from(&self.model_dir)
+    }
 }
 
-fn find_piper() -> Option<PathBuf> {
-    for c in &["piper", "/home/radxa/.local/bin/piper"] {
-        let p = PathBuf::from(c);
-        if p.exists() { return Some(p); }
-        if let Ok(o) = Command::new("which").arg(c).output() {
-            if o.status.success() {
-                let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                if !s.is_empty() { return Some(PathBuf::from(s)); }
+/// Безпечна назва файлу з тексту
+pub fn safe_filename(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            'a'..='z' | 'A'..='Z' | '0'..='9'
+            | 'а'..='я' | 'А'..='Я' | 'і' | 'ї' | 'є' | 'ґ' | 'І' | 'Ї' | 'Є' | 'Ґ'
+            | ' ' | '-' | '_' | '(' | ')' | '.' | ',' | '!' | '?' | '\'' | '"' => c,
+            _ => '_',
+        })
+        .collect::<String>()
+        .replace("__", "_")
+        .replace("  ", " ")
+        .trim()
+        .to_string()
+}
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    let config_path = "config.json";
+
+    let config = match AppConfig::load(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Помилка завантаження {}: {}", config_path, e);
+            eprintln!("Використовуються значення за замовчуванням");
+            AppConfig {
+                output_dir: "./output".to_string(),
+                port: 8080,
+                host: "0.0.0.0".to_string(),
+                speaker_id: 2,
+                model_dir: "./models/piper-uk_UK-dmytro-medium".to_string(),
             }
         }
+    };
+
+    server::start_server(config).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_safe_filename() {
+        assert!(safe_filename("Привіт світ").contains("Привіт"));
+        assert!(safe_filename("Текст/з/слешем").contains("_"));
+        assert!(safe_filename("Нормальний-текст").contains("Нормальний-текст"));
     }
-    None
 }

@@ -132,7 +132,12 @@
       "Bash(else *)",
       "Bash(mkdir *)",
       "Bash(// *)",
-      "Bash(testeof)"
+      "Bash(testeof)",
+      "Bash(sleep *)",
+      "Bash(cd *)",
+      "Bash(cargo run *)",
+      "Bash(./target/release/sherpa-ua-tts)",
+      "Bash(kill *)"
     ]
   },
   "$version": 3
