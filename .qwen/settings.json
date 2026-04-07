@@ -137,7 +137,9 @@
       "Bash(cd *)",
       "Bash(cargo run *)",
       "Bash(./target/release/sherpa-ua-tts)",
-      "Bash(kill *)"
+      "Bash(kill *)",
+      "Bash(lame *)",
+      "Bash(ffmpeg *)"
     ]
   },
   "$version": 3

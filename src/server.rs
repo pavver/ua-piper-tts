@@ -1,7 +1,7 @@
 use crate::normalize::normalize_text;
 use crate::safe_filename;
 use crate::AppConfig;
-use actix_web::{web, App, HttpResponse, HttpServer, post, get};
+use actix_web::{web, App, HttpResponse, HttpServer, get, post};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -20,8 +20,7 @@ pub struct TtsRequest {
 #[derive(Serialize)]
 pub struct TtsResponse {
     pub success: bool,
-    pub file_path: String,
-    pub file_size: u64,
+    pub filename: String,
     pub message: String,
     pub already_exists: bool,
 }
@@ -58,25 +57,23 @@ async fn tts(req: web::Json<TtsRequest>, data: web::Data<AppState>) -> HttpRespo
     if text.is_empty() {
         return HttpResponse::BadRequest().json(TtsResponse {
             success: false,
-            file_path: String::new(),
-            file_size: 0,
+            filename: String::new(),
             message: "Порожній текст".to_string(),
             already_exists: false,
         });
     }
 
-    // Формуємо ім'я файлу з оригінального тексту
-    let filename = safe_filename(text);
-    let wav_name = format!("{}.wav", filename);
-    let output_path = data.config.output_path().join(&wav_name);
+    // Формуємо ім'я файлу (MP3 або WAV)
+    let filename_base = safe_filename(text);
+    let extension = if has_lame() { "mp3" } else { "wav" };
+    let filename = format!("{}.{}", filename_base, extension);
+    let output_path = data.config.output_path().join(&filename);
 
     // Перевіряємо чи файл вже існує
     if output_path.exists() && !req.overwrite {
-        let size = fs::metadata(&output_path).map(|m| m.len()).unwrap_or(0);
         return HttpResponse::Ok().json(TtsResponse {
             success: true,
-            file_path: output_path.to_string_lossy().to_string(),
-            file_size: size,
+            filename: filename.clone(),
             message: "Файл вже існує, overwrite=false".to_string(),
             already_exists: true,
         });
@@ -86,8 +83,7 @@ async fn tts(req: web::Json<TtsRequest>, data: web::Data<AppState>) -> HttpRespo
     if let Err(e) = fs::create_dir_all(data.config.output_path()) {
         return HttpResponse::InternalServerError().json(TtsResponse {
             success: false,
-            file_path: String::new(),
-            file_size: 0,
+            filename: String::new(),
             message: format!("Не вдалося створити директорію: {}", e),
             already_exists: false,
         });
@@ -96,24 +92,23 @@ async fn tts(req: web::Json<TtsRequest>, data: web::Data<AppState>) -> HttpRespo
     // Нормалізуємо текст
     let normalized = normalize_text(text);
 
-    // Генерація через Piper CLI
-    let result = generate_audio(&normalized, &output_path, &data.config);
+    // Генерація аудіо
+    let result = if extension == "mp3" {
+        generate_mp3(&normalized, &output_path, &data.config)
+    } else {
+        generate_wav(&normalized, &output_path, &data.config)
+    };
 
     match result {
-        Ok(()) => {
-            let size = fs::metadata(&output_path).map(|m| m.len()).unwrap_or(0);
-            HttpResponse::Ok().json(TtsResponse {
-                success: true,
-                file_path: output_path.to_string_lossy().to_string(),
-                file_size: size,
-                message: "Аудіо згенеровано успішно".to_string(),
-                already_exists: false,
-            })
-        }
+        Ok(()) => HttpResponse::Ok().json(TtsResponse {
+            success: true,
+            filename: filename.clone(),
+            message: "Аудіо згенеровано успішно".to_string(),
+            already_exists: false,
+        }),
         Err(e) => HttpResponse::InternalServerError().json(TtsResponse {
             success: false,
-            file_path: String::new(),
-            file_size: 0,
+            filename: String::new(),
             message: format!("Помилка генерації: {}", e),
             already_exists: false,
         }),
@@ -122,14 +117,13 @@ async fn tts(req: web::Json<TtsRequest>, data: web::Data<AppState>) -> HttpRespo
 
 // ==================== Генерація аудіо ====================
 
-fn generate_audio(
+/// Генерація WAV через Piper CLI
+fn generate_wav(
     normalized_text: &str,
     output_path: &PathBuf,
     config: &AppConfig,
 ) -> Result<(), String> {
-    // Знаходимо Piper
     let piper_bin = find_piper().ok_or("piper не знайдено! pip3 install piper-tts")?;
-
     let model_onnx = config.model_dir().join("model.onnx");
     let model_json = config.model_dir().join("model.onnx.json");
 
@@ -166,6 +160,70 @@ fn generate_audio(
     Ok(())
 }
 
+/// Генерація MP3: piper stdout (WAV) → lame stdin → MP3 файл
+fn generate_mp3(
+    normalized_text: &str,
+    output_path: &PathBuf,
+    config: &AppConfig,
+) -> Result<(), String> {
+    let piper_bin = find_piper().ok_or("piper не знайдено!")?;
+    let model_onnx = config.model_dir().join("model.onnx");
+    let model_json = config.model_dir().join("model.onnx.json");
+
+    if !model_onnx.exists() {
+        return Err(format!("Модель не знайдена: {:?}", model_onnx));
+    }
+
+    // Piper → stdout (WAV)
+    let mut piper = Command::new(&piper_bin)
+        .arg("--model").arg(&model_onnx)
+        .arg("--config").arg(&model_json)
+        .arg("--speaker").arg(config.speaker_id.to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("Не вдалося запустити piper: {}", e))?;
+
+    // Пишемо текст в piper
+    if let Some(mut stdin) = piper.stdin.take() {
+        stdin.write_all(normalized_text.as_bytes())
+            .map_err(|e| format!("Помилка запису в piper: {}", e))?;
+    }
+
+    // Lame: stdin (WAV) → stdout (MP3) → файл
+    let lame_output = Command::new("lame")
+        .arg("-") // stdin
+        .arg(output_path.to_str().unwrap())
+        .stdin(piper.stdout.take().ok_or("Не вдалося отримати stdout від piper")?)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("Не вдалося запустити lame: {}", e))?;
+
+    if !lame_output.status.success() {
+        let stderr = String::from_utf8_lossy(&lame_output.stderr);
+        return Err(format!("lame помилка: {}", stderr.trim()));
+    }
+
+    if !output_path.exists() {
+        return Err("MP3 файл не створено".to_string());
+    }
+
+    Ok(())
+}
+
+/// Перевірка чи встановлено lame
+fn has_lame() -> bool {
+    Command::new("lame")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 fn find_piper() -> Option<PathBuf> {
     for c in &["piper", "/home/radxa/.local/bin/piper"] {
         let p = PathBuf::from(c);
@@ -185,6 +243,7 @@ fn find_piper() -> Option<PathBuf> {
 pub async fn start_server(config: AppConfig) -> std::io::Result<()> {
     let host = config.host.clone();
     let port = config.port;
+    let format_str = if has_lame() { "MP3" } else { "WAV" };
 
     println!("╔══════════════════════════════════════════╗");
     println!("║  Sherpa-UA TTS Server                    ║");
@@ -192,6 +251,7 @@ pub async fn start_server(config: AppConfig) -> std::io::Result<()> {
     println!("║  Адреса: http://{}:{}              ║", host, port);
     println!("║  POST /tts   - Генерація аудіо           ║");
     println!("║  GET  /health - Перевірка стану           ║");
+    println!("║  Формат: {}                          ║", format_str);
     println!("║  Speaker: {}                            ║", config.speaker_id);
     println!("║  Output: {}               ║", config.output_dir);
     println!("╚══════════════════════════════════════════╝");
