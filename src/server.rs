@@ -2,7 +2,7 @@ use crate::normalize::normalize_text;
 use crate::safe_filename;
 use crate::AppConfig;
 use crate::error_log::log_tts_error;
-use actix_web::{web, App, HttpResponse, HttpServer, get, post, Responder};
+use actix_web::{web, App, HttpResponse, HttpServer, get, post};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -16,8 +16,6 @@ pub struct TtsRequest {
     pub text: String,
     #[serde(default)]
     pub overwrite: bool,
-    /// Кастомне ім'я файлу (без розширення). Якщо None — генерується з тексту.
-    pub filename: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -54,40 +52,6 @@ async fn health(data: web::Data<AppState>) -> HttpResponse {
     })
 }
 
-/// GET /output/{filename} — віддача згенерованого аудіо-файлу
-async fn get_output(
-    path: web::Path<String>,
-    data: web::Data<AppState>,
-) -> impl Responder {
-    let filename = path.into_inner();
-
-    // Захист від path traversal
-    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
-        return HttpResponse::BadRequest().body("Некоректне ім'я файлу");
-    }
-
-    let file_path = data.config.output_path().join(&filename);
-
-    if !file_path.exists() {
-        return HttpResponse::NotFound().body(format!("Файл не знайдено: {}", filename));
-    }
-
-    // Визначаємо content-type
-    let content_type = if filename.ends_with(".mp3") {
-        "audio/mpeg"
-    } else {
-        "audio/wav"
-    };
-
-    match fs::read(&file_path) {
-        Ok(bytes) => HttpResponse::Ok()
-            .content_type(content_type)
-            .insert_header(("Accept-Ranges", "bytes"))
-            .body(bytes),
-        Err(_) => HttpResponse::InternalServerError().body("Не вдалося прочитати файл"),
-    }
-}
-
 #[post("/tts")]
 async fn tts(req: web::Json<TtsRequest>, data: web::Data<AppState>) -> HttpResponse {
     let text = req.text.trim();
@@ -100,36 +64,9 @@ async fn tts(req: web::Json<TtsRequest>, data: web::Data<AppState>) -> HttpRespo
         });
     }
 
+    // Формуємо ім'я файлу (MP3 або WAV)
+    let filename_base = safe_filename(text);
     let extension = if has_lame() { "mp3" } else { "wav" };
-
-    // Визначаємо ім'я файлу: кастомне або згенероване
-    let filename_base = if let Some(custom) = &req.filename {
-        let trimmed = custom.trim();
-        if trimmed.is_empty() {
-            safe_filename(text)
-        } else {
-            // Санітизуємо кастомне ім'я — прибираємо розширення та небезпечні символи
-            let without_ext = trimmed.trim_end_matches(".mp3").trim_end_matches(".wav");
-            without_ext.chars()
-                .filter(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | ' '))
-                .collect::<String>()
-                .replace("  ", " ")
-                .trim()
-                .to_string()
-        }
-    } else {
-        safe_filename(text)
-    };
-
-    if filename_base.is_empty() {
-        return HttpResponse::BadRequest().json(TtsResponse {
-            success: false,
-            filename: String::new(),
-            message: "Некоректне ім'я файлу".to_string(),
-            already_exists: false,
-        });
-    }
-
     let filename = format!("{}.{}", filename_base, extension);
     let output_path = data.config.output_path().join(&filename);
 
@@ -235,7 +172,7 @@ fn generate_wav(
     Ok(())
 }
 
-/// Генерація MP3: piper --output-raw (PCM stdout) → ffmpeg → MP3 файл
+/// Генерація MP3: piper stdout (WAV) → lame stdin → MP3 файл
 fn generate_mp3(
     normalized_text: &str,
     output_path: &PathBuf,
@@ -249,15 +186,14 @@ fn generate_mp3(
         return Err(format!("Модель не знайдена: {:?}", model_onnx));
     }
 
-    // Piper з --output-raw: пише сирий PCM (s16le, 22050 Hz, mono) на stdout
+    // Piper → stdout (WAV)
     let mut piper = Command::new(&piper_bin)
         .arg("--model").arg(&model_onnx)
         .arg("--config").arg(&model_json)
-        .arg("--output-raw")            // сирий PCM на stdout
         .arg("--speaker").arg(config.speaker_id.to_string())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped())  // Перехоплюємо stderr
         .spawn()
         .map_err(|e| format!("Не вдалося запустити piper: {}", e))?;
 
@@ -267,40 +203,34 @@ fn generate_mp3(
             .map_err(|e| format!("Помилка запису в piper: {}", e))?;
     }
 
-    // ffmpeg: читає сирий PCM з stdin → MP3 файл
-    // Формат входу: s16le (16-bit little-endian), 22050 Hz, 1 канал (mono)
-    let ffmpeg_output = Command::new("ffmpeg")
-        .arg("-y")                      // перезапис
-        .arg("-f").arg("s16le")         // формат входу: сирий PCM
-        .arg("-ar").arg("22050")        // sample rate Piper
-        .arg("-ac").arg("1")            // mono
-        .arg("-i").arg("pipe:0")        // stdin
-        .arg("-codec:a").arg("libmp3lame")
-        .arg("-b:a").arg("32k")         // 32 kbps — якість для мовлення
-        .arg("-ac").arg("1")            // mono
-        .arg("-ar").arg("22050")        // 22.05 kHz — оригінал Piper
-        .arg(output_path)               // вихід
+    // Lame: stdin (WAV) → stdout (MP3) → файл
+    let lame_output = Command::new("lame")
+        .arg("-b").arg("8")       // 8 kbps — мінімальний розмір
+        .arg("-m").arg("m")       // моно режим
+        .arg("--resample").arg("8") // 8 kHz (для мови достатньо)
+        .arg("-") // stdin
+        .arg(output_path.to_str().unwrap())
         .stdin(piper.stdout.take().ok_or("Не вдалося отримати stdout від piper")?)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .output()
-        .map_err(|e| format!("Не вдалося запустити ffmpeg: {}", e))?;
+        .map_err(|e| format!("Не вдалося запустити lame: {}", e))?;
 
-    // Чекаємо завершення Piper і перехоплюємо stderr
+    // Чекаємо завершення Piper і отримуємо stderr
     let piper_output = piper.wait_with_output()
         .map_err(|e| format!("Не вдалося дочекатись piper: {}", e))?;
 
-    if !piper_output.status.success() {
+    // Перевіряємо stderr від Piper на помилки
+    if !piper_output.stderr.is_empty() {
         let piper_stderr = String::from_utf8_lossy(&piper_output.stderr);
         if !piper_stderr.trim().is_empty() {
             log_tts_error(&piper_stderr, normalized_text);
         }
-        return Err(format!("piper завершився з кодом {:?}: {}", piper_output.status.code(), piper_stderr.trim()));
     }
 
-    if !ffmpeg_output.status.success() {
-        let stderr = String::from_utf8_lossy(&ffmpeg_output.stderr);
-        return Err(format!("ffmpeg помилка: {}", stderr.trim()));
+    if !lame_output.status.success() {
+        let stderr = String::from_utf8_lossy(&lame_output.stderr);
+        return Err(format!("lame помилка: {}", stderr.trim()));
     }
 
     if !output_path.exists() {
@@ -310,10 +240,10 @@ fn generate_mp3(
     Ok(())
 }
 
-/// Перевірка чи встановлено ffmpeg
+/// Перевірка чи встановлено lame
 fn has_lame() -> bool {
-    Command::new("ffmpeg")
-        .arg("-version")
+    Command::new("lame")
+        .arg("--version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -359,7 +289,6 @@ pub async fn start_server(config: AppConfig) -> std::io::Result<()> {
             .app_data(web::Data::new(AppState { config: config.clone() }))
             .service(tts)
             .service(health)
-            .route("/output/{filename}", web::get().to(get_output))
     })
     .bind((host.as_str(), port))?
     .run()
