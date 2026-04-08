@@ -190,6 +190,15 @@ cp config.json "$OUTPUT_DIR/" 2>/dev/null || warn "config.json not found"
 cp download_models.sh "$OUTPUT_DIR/" 2>/dev/null || warn "download_models.sh not found"
 chmod +x "$OUTPUT_DIR/download_models.sh" 2>/dev/null || true
 
+# Copy models if they exist
+if [ -d "models/piper-uk_UK-dmytro-medium" ]; then
+    info "Copying model files to dist..."
+    rm -rf "$OUTPUT_DIR/models"
+    cp -r "models" "$OUTPUT_DIR/"
+else
+    warn "Models not found. Run ./download_models.sh first"
+fi
+
 # Create run script
 cat > "$OUTPUT_DIR/run.sh" <<'RUNEOF'
 #!/usr/bin/env bash

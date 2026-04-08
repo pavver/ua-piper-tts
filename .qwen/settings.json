@@ -140,7 +140,8 @@
       "Bash(kill *)",
       "Bash(lame *)",
       "Bash(ffmpeg *)",
-      "Bash(mv *)"
+      "Bash(mv *)",
+      "Bash(tar *)"
     ]
   },
   "$version": 3

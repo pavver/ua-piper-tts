@@ -172,7 +172,7 @@ fn generate_wav(
     Ok(())
 }
 
-/// Генерація MP3: piper stdout (WAV) → lame stdin → MP3 файл
+/// Генерація MP3: piper --output-raw (PCM stdout) → ffmpeg → MP3 файл
 fn generate_mp3(
     normalized_text: &str,
     output_path: &PathBuf,
@@ -186,14 +186,15 @@ fn generate_mp3(
         return Err(format!("Модель не знайдена: {:?}", model_onnx));
     }
 
-    // Piper → stdout (WAV)
+    // Piper з --output-raw: пише сирий PCM (s16le, 22050 Hz, mono) на stdout
     let mut piper = Command::new(&piper_bin)
         .arg("--model").arg(&model_onnx)
         .arg("--config").arg(&model_json)
+        .arg("--output-raw")            // сирий PCM на stdout
         .arg("--speaker").arg(config.speaker_id.to_string())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())  // Перехоплюємо stderr
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("Не вдалося запустити piper: {}", e))?;
 
@@ -203,34 +204,40 @@ fn generate_mp3(
             .map_err(|e| format!("Помилка запису в piper: {}", e))?;
     }
 
-    // Lame: stdin (WAV) → stdout (MP3) → файл
-    let lame_output = Command::new("lame")
-        .arg("-b").arg("8")       // 8 kbps — мінімальний розмір
-        .arg("-m").arg("m")       // моно режим
-        .arg("--resample").arg("8") // 8 kHz (для мови достатньо)
-        .arg("-") // stdin
-        .arg(output_path.to_str().unwrap())
+    // ffmpeg: читає сирий PCM з stdin → MP3 файл
+    // Формат входу: s16le (16-bit little-endian), 22050 Hz, 1 канал (mono)
+    let ffmpeg_output = Command::new("ffmpeg")
+        .arg("-y")                      // перезапис
+        .arg("-f").arg("s16le")         // формат входу: сирий PCM
+        .arg("-ar").arg("22050")        // sample rate Piper
+        .arg("-ac").arg("1")            // mono
+        .arg("-i").arg("pipe:0")        // stdin
+        .arg("-codec:a").arg("libmp3lame")
+        .arg("-b:a").arg("8k")          // 8 kbps
+        .arg("-ac").arg("1")            // mono
+        .arg("-ar").arg("8000")         // 8 kHz
+        .arg(output_path)               // вихід
         .stdin(piper.stdout.take().ok_or("Не вдалося отримати stdout від piper")?)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .output()
-        .map_err(|e| format!("Не вдалося запустити lame: {}", e))?;
+        .map_err(|e| format!("Не вдалося запустити ffmpeg: {}", e))?;
 
-    // Чекаємо завершення Piper і отримуємо stderr
+    // Чекаємо завершення Piper і перехоплюємо stderr
     let piper_output = piper.wait_with_output()
         .map_err(|e| format!("Не вдалося дочекатись piper: {}", e))?;
 
-    // Перевіряємо stderr від Piper на помилки
-    if !piper_output.stderr.is_empty() {
+    if !piper_output.status.success() {
         let piper_stderr = String::from_utf8_lossy(&piper_output.stderr);
         if !piper_stderr.trim().is_empty() {
             log_tts_error(&piper_stderr, normalized_text);
         }
+        return Err(format!("piper завершився з кодом {:?}: {}", piper_output.status.code(), piper_stderr.trim()));
     }
 
-    if !lame_output.status.success() {
-        let stderr = String::from_utf8_lossy(&lame_output.stderr);
-        return Err(format!("lame помилка: {}", stderr.trim()));
+    if !ffmpeg_output.status.success() {
+        let stderr = String::from_utf8_lossy(&ffmpeg_output.stderr);
+        return Err(format!("ffmpeg помилка: {}", stderr.trim()));
     }
 
     if !output_path.exists() {
@@ -240,10 +247,10 @@ fn generate_mp3(
     Ok(())
 }
 
-/// Перевірка чи встановлено lame
+/// Перевірка чи встановлено ffmpeg
 fn has_lame() -> bool {
-    Command::new("lame")
-        .arg("--version")
+    Command::new("ffmpeg")
+        .arg("-version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
