@@ -66,7 +66,7 @@ async fn tts(req: web::Json<TtsRequest>, data: web::Data<AppState>) -> HttpRespo
 
     // Формуємо ім'я файлу (MP3 або WAV)
     let filename_base = safe_filename(text);
-    let extension = if has_lame() { "mp3" } else { "wav" };
+    let extension = if has_ffmpeg() { "mp3" } else { "wav" };
     let filename = format!("{}.{}", filename_base, extension);
     let output_path = data.config.output_path().join(&filename);
 
@@ -172,7 +172,7 @@ fn generate_wav(
     Ok(())
 }
 
-/// Генерація MP3: piper stdout (WAV) → lame stdin → MP3 файл
+/// Генерація MP3: piper --output-raw (PCM) → ffmpeg → MP3 файл
 fn generate_mp3(
     normalized_text: &str,
     output_path: &PathBuf,
@@ -186,14 +186,15 @@ fn generate_mp3(
         return Err(format!("Модель не знайдена: {:?}", model_onnx));
     }
 
-    // Piper → stdout (WAV)
+    // Piper → stdout (raw PCM s16le, 22050 Hz, mono)
     let mut piper = Command::new(&piper_bin)
         .arg("--model").arg(&model_onnx)
         .arg("--config").arg(&model_json)
+        .arg("--output-raw")
         .arg("--speaker").arg(config.speaker_id.to_string())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())  // Перехоплюємо stderr
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("Не вдалося запустити piper: {}", e))?;
 
@@ -203,18 +204,23 @@ fn generate_mp3(
             .map_err(|e| format!("Помилка запису в piper: {}", e))?;
     }
 
-    // Lame: stdin (WAV) → stdout (MP3) → файл
-    let lame_output = Command::new("lame")
-        .arg("-b").arg("8")       // 8 kbps — мінімальний розмір
-        .arg("-m").arg("m")       // моно режим
-        .arg("--resample").arg("8") // 8 kHz (для мови достатньо)
-        .arg("-") // stdin
+    // ffmpeg: stdin (raw PCM) → MP3 файл
+    let ffmpeg_output = Command::new("ffmpeg")
+        .arg("-y")
+        .arg("-f").arg("s16le")
+        .arg("-ar").arg("22050")
+        .arg("-ac").arg("1")
+        .arg("-i").arg("pipe:0")
+        .arg("-codec:a").arg("libmp3lame")
+        .arg("-b:a").arg("32k")
+        .arg("-ac").arg("1")
+        .arg("-ar").arg("22050")
         .arg(output_path.to_str().unwrap())
         .stdin(piper.stdout.take().ok_or("Не вдалося отримати stdout від piper")?)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .output()
-        .map_err(|e| format!("Не вдалося запустити lame: {}", e))?;
+        .map_err(|e| format!("Не вдалося запустити ffmpeg: {}", e))?;
 
     // Чекаємо завершення Piper і отримуємо stderr
     let piper_output = piper.wait_with_output()
@@ -228,9 +234,9 @@ fn generate_mp3(
         }
     }
 
-    if !lame_output.status.success() {
-        let stderr = String::from_utf8_lossy(&lame_output.stderr);
-        return Err(format!("lame помилка: {}", stderr.trim()));
+    if !ffmpeg_output.status.success() {
+        let stderr = String::from_utf8_lossy(&ffmpeg_output.stderr);
+        return Err(format!("ffmpeg помилка: {}", stderr.trim()));
     }
 
     if !output_path.exists() {
@@ -240,10 +246,10 @@ fn generate_mp3(
     Ok(())
 }
 
-/// Перевірка чи встановлено lame
-fn has_lame() -> bool {
-    Command::new("lame")
-        .arg("--version")
+/// Перевірка чи встановлено ffmpeg
+fn has_ffmpeg() -> bool {
+    Command::new("ffmpeg")
+        .arg("-version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -265,12 +271,37 @@ fn find_piper() -> Option<PathBuf> {
     None
 }
 
+// ==================== Віддача файлів ====================
+
+#[get("/output/{filename}")]
+async fn get_output(
+    path: web::Path<String>,
+    data: web::Data<AppState>,
+) -> HttpResponse {
+    let filename = path.into_inner();
+    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
+        return HttpResponse::BadRequest().body("Некоректне ім'я файлу");
+    }
+    let file_path = data.config.output_path().join(&filename);
+    if !file_path.exists() {
+        return HttpResponse::NotFound().body(format!("Файл не знайдено: {}", filename));
+    }
+    let content_type = if filename.ends_with(".mp3") { "audio/mpeg" } else { "audio/wav" };
+    match fs::read(&file_path) {
+        Ok(bytes) => HttpResponse::Ok()
+            .content_type(content_type)
+            .insert_header(("Accept-Ranges", "bytes"))
+            .body(bytes),
+        Err(_) => HttpResponse::InternalServerError().body("Не вдалося прочитати файл"),
+    }
+}
+
 // ==================== Запуск сервера ====================
 
 pub async fn start_server(config: AppConfig) -> std::io::Result<()> {
     let host = config.host.clone();
     let port = config.port;
-    let format_str = if has_lame() { "MP3" } else { "WAV" };
+    let format_str = if has_ffmpeg() { "MP3" } else { "WAV" };
 
     println!("╔══════════════════════════════════════════╗");
     println!("║  Sherpa-UA TTS Server                    ║");
@@ -289,6 +320,7 @@ pub async fn start_server(config: AppConfig) -> std::io::Result<()> {
             .app_data(web::Data::new(AppState { config: config.clone() }))
             .service(tts)
             .service(health)
+            .service(get_output)
     })
     .bind((host.as_str(), port))?
     .run()
