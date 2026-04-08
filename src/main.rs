@@ -30,20 +30,32 @@ impl AppConfig {
     }
 }
 
-/// Безпечна назва файлу з тексту
+/// Безпечна назва файлу з тексту — заборонені символи замінюються на _
 pub fn safe_filename(text: &str) -> String {
-    text.chars()
+    let result: String = text.chars()
         .map(|c| match c {
             'a'..='z' | 'A'..='Z' | '0'..='9'
             | 'а'..='я' | 'А'..='Я' | 'і' | 'ї' | 'є' | 'ґ' | 'І' | 'Ї' | 'Є' | 'Ґ'
-            | ' ' | '-' | '_' | '(' | ')' | '.' | ',' | '!' | '?' | '\'' | '"' => c,
+            | ' ' | '-' | '_' | '\'' | '"' | '(' | ')' | ',' => c,
             _ => '_',
         })
-        .collect::<String>()
-        .replace("__", "_")
-        .replace("  ", " ")
-        .trim()
-        .to_string()
+        .collect();
+
+    // Згортаємо послідовні підкреслення в одне
+    let mut prev_underscore = false;
+    let cleaned: String = result.chars()
+        .filter(|c| {
+            if *c == '_' {
+                if prev_underscore { return false; }
+                prev_underscore = true;
+            } else {
+                prev_underscore = false;
+            }
+            true
+        })
+        .collect();
+
+    cleaned.trim().trim_end_matches('_').to_string()
 }
 
 #[tokio::main]

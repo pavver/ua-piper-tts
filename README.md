@@ -14,10 +14,10 @@ Before synthesis, text is normalized using pure Rust code with the `num2words` c
 
 | Format | Condition | Parameters |
 |--------|-----------|------------|
-| **MP3** | `ffmpeg` installed | 8 kbps, mono, 8 kHz |
-| **WAV** | `ffmpeg` not found | PCM WAV (uncompressed) |
+| **MP3** | `ffmpeg` installed | 32 kbps, mono, 22.05 kHz |
+| **WAV** | `ffmpeg` not found | PCM WAV (uncompressed, 22050 Hz) |
 
-Format is determined automatically at startup. For minimal file size, MP3 with 8 kbps bitrate in mono mode is used.
+Format is determined automatically at startup. MP3 with 32 kbps bitrate provides clear speech quality with small file size (~8 KB per phrase).
 
 ## Web Server (REST API)
 
@@ -45,6 +45,23 @@ cargo run
 |--------|------|-------------|
 | `GET` | `/health` | Server health check |
 | `POST` | `/tts` | Generate audio |
+| `GET` | `/output/{filename}` | Download generated audio file |
+
+### TTS Request Body
+
+```json
+{
+  "text": "Привіт світе",
+  "overwrite": false,
+  "filename": "custom_name"
+}
+```
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `text` | Yes | Text to synthesize |
+| `overwrite` | No | `true` = regenerate even if file exists (default: false) |
+| `filename` | No | Custom filename (without extension). Auto-generated from text if omitted. |
 
 ### Example Request
 

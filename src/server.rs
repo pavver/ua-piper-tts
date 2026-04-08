@@ -16,6 +16,8 @@ pub struct TtsRequest {
     pub text: String,
     #[serde(default)]
     pub overwrite: bool,
+    /// Кастомне ім'я файлу (без розширення). Якщо None — генерується з тексту.
+    pub filename: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -98,9 +100,36 @@ async fn tts(req: web::Json<TtsRequest>, data: web::Data<AppState>) -> HttpRespo
         });
     }
 
-    // Формуємо ім'я файлу (MP3 або WAV)
-    let filename_base = safe_filename(text);
     let extension = if has_lame() { "mp3" } else { "wav" };
+
+    // Визначаємо ім'я файлу: кастомне або згенероване
+    let filename_base = if let Some(custom) = &req.filename {
+        let trimmed = custom.trim();
+        if trimmed.is_empty() {
+            safe_filename(text)
+        } else {
+            // Санітизуємо кастомне ім'я — прибираємо розширення та небезпечні символи
+            let without_ext = trimmed.trim_end_matches(".mp3").trim_end_matches(".wav");
+            without_ext.chars()
+                .filter(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | ' '))
+                .collect::<String>()
+                .replace("  ", " ")
+                .trim()
+                .to_string()
+        }
+    } else {
+        safe_filename(text)
+    };
+
+    if filename_base.is_empty() {
+        return HttpResponse::BadRequest().json(TtsResponse {
+            success: false,
+            filename: String::new(),
+            message: "Некоректне ім'я файлу".to_string(),
+            already_exists: false,
+        });
+    }
+
     let filename = format!("{}.{}", filename_base, extension);
     let output_path = data.config.output_path().join(&filename);
 

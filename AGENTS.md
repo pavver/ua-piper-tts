@@ -53,7 +53,7 @@ tokio = "1"         # Async runtime
 
 - **piper-tts** (`pip3 install piper-tts`) — provides `piper` CLI binary
 - **ONNX Runtime** — auto-installed with piper-tts
-- **ffmpeg** (optional) — for MP3 encoding (8 kbps, mono, 8 kHz)
+- **ffmpeg** (optional) — for MP3 encoding (32 kbps, mono, 22.05 kHz)
 
 ---
 
@@ -319,11 +319,15 @@ The update script workflow:
 - [x] Systemd service integration
 - [x] Cross-compilation support (x86_64, aarch64, armv7)
 - [x] Automated update script (pull, rebuild, restart)
+- [x] Custom filename parameter in TTS request
+- [x] `/output/{filename}` endpoint for file serving
+- [x] Improved MP3 quality (32 kbps, 22.05 kHz)
+- [x] ffmpeg instead of lame for MP3 encoding
 - [ ] Add ASR (speech recognition) — whisper.cpp or sherpa-onnx ASR
 - [ ] Add more Ukrainian models (if available)
 - [ ] NPU support (RKNN) — not yet working with Piper
 - [ ] Streaming TTS — chunked generation for long texts
-- [ ] Caching — don't regenerate identical text
+- [ ] Caching — don't regenerate identical text (see ua-tts-demo)
 - [ ] Speaker selection via CLI argument
 - [ ] Auto-fix known errors based on `tts_errors.log`
 
