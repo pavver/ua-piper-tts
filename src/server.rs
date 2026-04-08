@@ -2,7 +2,7 @@ use crate::normalize::normalize_text;
 use crate::safe_filename;
 use crate::AppConfig;
 use crate::error_log::log_tts_error;
-use actix_web::{web, App, HttpResponse, HttpServer, get, post};
+use actix_web::{web, App, HttpResponse, HttpServer, get, post, Responder};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -50,6 +50,40 @@ async fn health(data: web::Data<AppState>) -> HttpResponse {
         output_dir: data.config.output_dir.clone(),
         speaker_id: data.config.speaker_id,
     })
+}
+
+/// GET /output/{filename} — віддача згенерованого аудіо-файлу
+async fn get_output(
+    path: web::Path<String>,
+    data: web::Data<AppState>,
+) -> impl Responder {
+    let filename = path.into_inner();
+
+    // Захист від path traversal
+    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
+        return HttpResponse::BadRequest().body("Некоректне ім'я файлу");
+    }
+
+    let file_path = data.config.output_path().join(&filename);
+
+    if !file_path.exists() {
+        return HttpResponse::NotFound().body(format!("Файл не знайдено: {}", filename));
+    }
+
+    // Визначаємо content-type
+    let content_type = if filename.ends_with(".mp3") {
+        "audio/mpeg"
+    } else {
+        "audio/wav"
+    };
+
+    match fs::read(&file_path) {
+        Ok(bytes) => HttpResponse::Ok()
+            .content_type(content_type)
+            .insert_header(("Accept-Ranges", "bytes"))
+            .body(bytes),
+        Err(_) => HttpResponse::InternalServerError().body("Не вдалося прочитати файл"),
+    }
 }
 
 #[post("/tts")]
@@ -296,6 +330,7 @@ pub async fn start_server(config: AppConfig) -> std::io::Result<()> {
             .app_data(web::Data::new(AppState { config: config.clone() }))
             .service(tts)
             .service(health)
+            .route("/output/{filename}", web::get().to(get_output))
     })
     .bind((host.as_str(), port))?
     .run()
