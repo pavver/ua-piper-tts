@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Sherpa-UA TTS — Dependency Installation Script
+# UA-Piper-TTS — Dependency Installation Script
 # Supports: x86_64, aarch64 (ARM64)
 # Distributions: Debian/Ubuntu, Fedora/RHEL, Arch Linux
 # =============================================================================
@@ -81,7 +81,7 @@ install_system_deps() {
                 python3-venv \
                 curl \
                 wget \
-                lame
+                ffmpeg
             ;;
         dnf|yum)
             if [ "$PKG_MANAGER" = "dnf" ]; then
@@ -92,7 +92,7 @@ install_system_deps() {
                     python3-pip \
                     curl \
                     wget \
-                    lame
+                    ffmpeg
             else
                 sudo yum install -y \
                     gcc gcc-c++ make \
@@ -101,7 +101,7 @@ install_system_deps() {
                     python3-pip \
                     curl \
                     wget \
-                    lame
+                    ffmpeg
             fi
             ;;
         pacman)
@@ -112,7 +112,7 @@ install_system_deps() {
                 python-pip \
                 curl \
                 wget \
-                lame
+                ffmpeg
             ;;
     esac
 
@@ -200,7 +200,7 @@ download_model() {
 # Main
 main() {
     echo "============================================"
-    echo "  Sherpa-UA TTS — Dependency Installer"
+    echo "  UA-Piper-TTS — Dependency Installer"
     echo "============================================"
     echo
 

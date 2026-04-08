@@ -53,7 +53,7 @@ tokio = "1"         # Async runtime
 
 - **piper-tts** (`pip3 install piper-tts`) — provides `piper` CLI binary
 - **ONNX Runtime** — auto-installed with piper-tts
-- **lame** (optional) — for MP3 encoding
+- **ffmpeg** (optional) — for MP3 encoding (8 kbps, mono, 8 kHz)
 
 ---
 

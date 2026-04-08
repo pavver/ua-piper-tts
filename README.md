@@ -14,8 +14,8 @@ Before synthesis, text is normalized using pure Rust code with the `num2words` c
 
 | Format | Condition | Parameters |
 |--------|-----------|------------|
-| **MP3** | `lame` installed | 8 kbps, mono, 8 kHz |
-| **WAV** | `lame` not found | PCM WAV (uncompressed) |
+| **MP3** | `ffmpeg` installed | 8 kbps, mono, 8 kHz |
+| **WAV** | `ffmpeg` not found | PCM WAV (uncompressed) |
 
 Format is determined automatically at startup. For minimal file size, MP3 with 8 kbps bitrate in mono mode is used.
 
@@ -100,7 +100,7 @@ One-command setup: install dependencies, build, deploy, and start:
 
 This script will:
 - Detect your architecture (x86_64, aarch64, armv7)
-- Install system packages (gcc, openssl, lame, etc.)
+- Install system packages (gcc, openssl, ffmpeg, etc.)
 - Install Rust (if not present)
 - Install Piper TTS
 - Optionally download the Ukrainian model

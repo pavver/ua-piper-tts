@@ -187,7 +187,7 @@ start_service() {
 
 # Stop service
 stop_service() {
-    info "Stopping Sherpa-UA TTS service..."
+    info "Stopping UA-Piper-TTS service..."
     systemctl stop "$SERVICE_NAME"
     success "Service stopped"
 }
