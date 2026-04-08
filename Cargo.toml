@@ -1,5 +1,5 @@
 [package]
-name = "sherpa-ua-tts"
+name = "ua-piper-tts"
 version = "0.1.0"
 edition = "2024"
 

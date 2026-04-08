@@ -1,5 +1,6 @@
 mod normalize;
 mod server;
+mod error_log;
 
 use serde::Deserialize;
 use std::path::PathBuf;

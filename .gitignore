@@ -3,4 +3,6 @@
 models/
 *.onnx
 *.wav
+*.mp3
 Cargo.lock
+tts_errors.log

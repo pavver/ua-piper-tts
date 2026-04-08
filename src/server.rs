@@ -1,6 +1,7 @@
 use crate::normalize::normalize_text;
 use crate::safe_filename;
 use crate::AppConfig;
+use crate::error_log::log_tts_error;
 use actix_web::{web, App, HttpResponse, HttpServer, get, post};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -138,6 +139,7 @@ fn generate_wav(
         .arg("--speaker").arg(config.speaker_id.to_string())
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
+        .stderr(Stdio::piped())  // Перехоплюємо stderr
         .spawn()
         .map_err(|e| format!("Не вдалося запустити piper: {}", e))?;
 
@@ -146,11 +148,21 @@ fn generate_wav(
             .map_err(|e| format!("Помилка запису в stdin: {}", e))?;
     }
 
-    let status = child.wait()
+    let output = child.wait_with_output()
         .map_err(|e| format!("Не вдалося дочекатись piper: {}", e))?;
 
-    if !status.success() {
-        return Err(format!("piper завершився з кодом {:?}", status.code()));
+    // Перевіряємо stderr на помилки
+    if !output.stderr.is_empty() {
+        let stderr_text = String::from_utf8_lossy(&output.stderr);
+        // Якщо є помилки в stderr, логуємо їх
+        if !stderr_text.trim().is_empty() {
+            log_tts_error(&stderr_text, normalized_text);
+        }
+    }
+
+    if !output.status.success() {
+        let stderr_text = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("piper завершився з кодом {:?}: {}", output.status.code(), stderr_text.trim()));
     }
 
     if !output_path.exists() {
@@ -181,7 +193,7 @@ fn generate_mp3(
         .arg("--speaker").arg(config.speaker_id.to_string())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())  // Перехоплюємо stderr
         .spawn()
         .map_err(|e| format!("Не вдалося запустити piper: {}", e))?;
 
@@ -203,6 +215,18 @@ fn generate_mp3(
         .stderr(Stdio::piped())
         .output()
         .map_err(|e| format!("Не вдалося запустити lame: {}", e))?;
+
+    // Чекаємо завершення Piper і отримуємо stderr
+    let piper_output = piper.wait_with_output()
+        .map_err(|e| format!("Не вдалося дочекатись piper: {}", e))?;
+
+    // Перевіряємо stderr від Piper на помилки
+    if !piper_output.stderr.is_empty() {
+        let piper_stderr = String::from_utf8_lossy(&piper_output.stderr);
+        if !piper_stderr.trim().is_empty() {
+            log_tts_error(&piper_stderr, normalized_text);
+        }
+    }
 
     if !lame_output.status.success() {
         let stderr = String::from_utf8_lossy(&lame_output.stderr);

@@ -139,7 +139,8 @@
       "Bash(./target/release/sherpa-ua-tts)",
       "Bash(kill *)",
       "Bash(lame *)",
-      "Bash(ffmpeg *)"
+      "Bash(ffmpeg *)",
+      "Bash(mv *)"
     ]
   },
   "$version": 3

@@ -1,33 +1,33 @@
-# Sherpa-UA TTS
+# UA-Piper-TTS
 
-Rust-проект для генерації аудіо з тексту українською мовою.
+Rust project for generating audio from Ukrainian text.
 
-## Як це працює
+## How It Works
 
-Rust викликає **Piper TTS** (CLI) через subprocess.
-Перед синтезом текст нормалізується чистим Rust-кодом з використанням крейту `num2words`:
-- Числа → українські слова (25 → "двадцять п'ять")
-- Спецсимволи → слова (°C → "градусів це́льсія" з наголосом)
-- Великі літери → маленькі (модель не підтримує uppercase)
+Rust calls **Piper TTS** (CLI) via subprocess.
+Before synthesis, text is normalized using pure Rust code with the `num2words` crate:
+- Numbers → Ukrainian words (25 → "двадцять п'ять")
+- Special characters → words (°C → "градусів це́льсія" with stress mark)
+- Uppercase → lowercase (model doesn't support uppercase)
 
-## Формат аудіо
+## Audio Format
 
-| Формат | Умова | Параметри |
-|--------|-------|-----------|
-| **MP3** | встановлено `lame` | 8 kbps, моно, 8 kHz |
-| **WAV** | `lame` відсутній | PCM WAV (без стиснення) |
+| Format | Condition | Parameters |
+|--------|-----------|------------|
+| **MP3** | `lame` installed | 8 kbps, mono, 8 kHz |
+| **WAV** | `lame` not found | PCM WAV (uncompressed) |
 
-Формат визначається автоматично при запуску. Для мінімального розміру файлу використовується MP3 з бітрейтом 8 kbps у моно режимі.
+Format is determined automatically at startup. For minimal file size, MP3 with 8 kbps bitrate in mono mode is used.
 
-## Веб-сервер (REST API)
+## Web Server (REST API)
 
-### Запуск
+### Start
 
 ```bash
 cargo run
 ```
 
-### Конфігурація (`config.json`)
+### Configuration (`config.json`)
 
 ```json
 {
@@ -39,14 +39,14 @@ cargo run
 }
 ```
 
-### Ендпоінти
+### Endpoints
 
-| Метод | Шлях | Опис |
-|-------|------|------|
-| `GET` | `/health` | Стан сервера |
-| `POST` | `/tts` | Генерація аудіо |
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Server health check |
+| `POST` | `/tts` | Generate audio |
 
-### Приклад запиту
+### Example Request
 
 ```bash
 curl -X POST http://localhost:9000/tts \
@@ -54,68 +54,100 @@ curl -X POST http://localhost:9000/tts \
   -d '{"text": "Привіт світе", "overwrite": false}'
 ```
 
-### Приклад відповіді
+### Example Response
 
 ```json
 {
   "success": true,
   "filename": "Привіт світе.mp3",
-  "message": "Аудіо згенеровано успішно",
+  "message": "Audio generated successfully",
   "already_exists": false
 }
 ```
 
-Параметр `overwrite`: `true` — перегенерувати файл, `false` — пропустити якщо існує.
+Parameter `overwrite`: `true` — regenerate file, `false` — skip if exists.
 
-## Моделі
+## Models
 
-| Модель | Спікери | Якість |
-|--------|---------|--------|
-| `piper-uk_UK-dmytro-medium` | 3 (lada, mykyta, tetiana) | Хороша |
+| Model | Speakers | Quality |
+|-------|----------|---------|
+| `piper-uk_UK-dmytro-medium` | 3 (lada, mykyta, tetiana) | Good |
 
-За замовчуванням використовується **speaker_2 (tetiana)** — жіночий голос.
+Default uses **speaker_2 (tetiana)** — female voice.
 
-## Встановлення
+## Installation
 
-### Вимоги
-- Linux (x86_64 або aarch64)
-- Python 3.8+ (тільки для Piper CLI)
+### Requirements
+- Linux (x86_64 or aarch64)
+- Python 3.8+ (Piper CLI only)
 - Rust 1.70+
 
-### Крок 1: Встановіть залежності
+### Quick Install (Recommended)
+
+One-command setup: install dependencies, build, deploy, and start:
 
 ```bash
-# Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source "$HOME/.cargo/env"
-
-# Piper TTS
-pip3 install piper-tts
-
-# MP3 кодування (опціонально, але рекомендовано)
-sudo apt-get install lame
+./scripts/quickstart.sh
 ```
 
-### Крок 2: Клонуйте та завантажте модель
+### Manual Installation
+
+#### Step 1: Install Dependencies
 
 ```bash
-git clone <url>
-cd sherpa-ua-tts
-chmod +x download_models.sh
-./download_models.sh  # ~74 MB
+./scripts/install_deps.sh
 ```
 
-### Крок 3: Запуск
+This script will:
+- Detect your architecture (x86_64, aarch64, armv7)
+- Install system packages (gcc, openssl, lame, etc.)
+- Install Rust (if not present)
+- Install Piper TTS
+- Optionally download the Ukrainian model
+
+#### Step 2: Build
+
+```bash
+# Release build for current architecture
+./scripts/build.sh
+
+# Cross-compile for ARM64
+./scripts/build.sh -a aarch64
+
+# Cross-compile for ARMv7
+./scripts/build.sh -a armv7
+
+# Clean build
+./scripts/build.sh -c
+```
+
+#### Step 3: Deploy & Run
+
+```bash
+# Install as systemd service (requires sudo)
+sudo ./scripts/deploy.sh install
+
+# Start the service
+sudo ./scripts/deploy.sh start
+
+# Check status
+./scripts/deploy.sh status
+
+# View logs
+sudo ./scripts/deploy.sh logs -f
+```
+
+### Alternative: Run Directly
 
 ```bash
 cargo run
 ```
 
-Сервер запуститься на `http://0.0.0.0:9000`. Аудіо зберігається у `output/`.
+Server will start at `http://0.0.0.0:9000`. Audio is saved to `output/`.
 
-## Зміна спікера
+## Changing Speaker
 
-У `config.json`:
+In `config.json`:
 
 ```json
 {
@@ -123,37 +155,92 @@ cargo run
 }
 ```
 
-## Нормалізація чисел
+## Service Management
 
-| Ввід | Вимовляється як |
-|------|-----------------|
+After deploying with `./scripts/deploy.sh install`:
+
+| Command | Description |
+|---------|-------------|
+| `sudo ./scripts/deploy.sh start` | Start the service |
+| `sudo ./scripts/deploy.sh stop` | Stop the service |
+| `sudo ./scripts/deploy.sh restart` | Restart the service |
+| `./scripts/deploy.sh status` | Check service status |
+| `sudo ./scripts/deploy.sh logs -f` | Follow service logs |
+| `sudo ./scripts/deploy.sh uninstall` | Remove the service |
+
+The service runs as `tts` system user with security hardening enabled.
+
+## Updating
+
+To update to the latest version:
+
+```bash
+# Pull latest changes, rebuild, and restart
+./scripts/update.sh
+
+# Update from a specific branch
+./scripts/update.sh -b develop
+
+# Force rebuild even if no new commits
+./scripts/update.sh -f
+
+# Dry run — check what would be done
+./scripts/update.sh -n
+```
+
+The update script will:
+1. Verify you're in the project root
+2. Check if the service is deployed
+3. Pull latest changes from GitHub (stops if already up to date)
+4. Rebuild the project
+5. Redeploy and restart the service
+
+## Number Normalization
+
+| Input | Spoken As |
+|-------|-----------|
 | `25°C` | двадцять п'ять градусів це́льсія |
 | `36.6°C` | тридцять шість **і** шість градусів це́льсія |
 | `9.6°C` | дев'ять цілих шість десятих градусів це́льсія |
 | `-5°C` | мінус п'ять градусів це́льсія |
 | `100%` | сто відсотків |
-| `$50` | п'ятдесят доларів |
-| `#123` | номер сто двадцять три |
 | `3.14` | три цілих чотирнадцять сотих |
 
-### Правило температури
-- Ціла частина **> 9**: короткий формат `"36 і шість"`
-- Ціла частина **≤ 9**: повний формат `"дев'ять цілих шість десятих"`
+### Temperature Rule
+- Integer part **> 9**: short format `"36 і шість"`
+- Integer part **≤ 9**: full format `"дев'ять цілих шість десятих"`
 
-## Структура проекту
+## Error Logging
+
+The application automatically captures errors from Piper TTS and writes them to `tts_errors.log`.
+
+### Log Format
+
+```
+[Piper error message] | [Text that triggered the error]
+```
+
+This allows you to:
+- Quickly find problematic text fragments
+- Have full context for error analysis
+- Fix text or model settings accordingly
+
+## Project Structure
 
 ```
 ├── Cargo.toml              # num2words, hound, actix-web
-├── config.json             # Конфігурація сервера
+├── config.json             # Server configuration
 ├── src/
-│   ├── main.rs             # Вхідна точка, завантаження конфігу
-│   ├── server.rs           # Веб-сервер, генерація аудіо (WAV/MP3)
-│   └── normalize.rs        # Нормалізація тексту (num2words)
-├── download_models.sh      # Завантаження Piper моделі
-├── models/                 # Моделі (в gitignore)
-└── output/                 # Результат (в gitignore)
+│   ├── main.rs             # Entry point, config loading
+│   ├── server.rs           # Web server, audio generation (WAV/MP3)
+│   ├── normalize.rs        # Text normalization (num2words)
+│   └── error_log.rs        # TTS error logging
+├── download_models.sh      # Piper model download script
+├── models/                 # Models (gitignored)
+├── output/                 # Output (gitignored)
+└── tts_errors.log          # Error log (gitignored, auto-generated)
 ```
 
-## Ліцензія
+## License
 
-Код — без обмежень. Модель — [Piper Voices](https://huggingface.co/rhasspy/piper-voices).
+Code — no restrictions. Model — [Piper Voices](https://huggingface.co/rhasspy/piper-voices).

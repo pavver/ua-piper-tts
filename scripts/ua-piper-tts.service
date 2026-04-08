@@ -1,0 +1,26 @@
+[Unit]
+Description=UA-Piper-TTS Server - Ukrainian Text-to-Speech
+After=network.target sound.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=tts
+Group=tts
+WorkingDirectory=/opt/ua-piper-tts
+ExecStart=/opt/ua-piper-tts/ua-piper-tts
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ua-piper-tts
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/ua-piper-tts/output /opt/ua-piper-tts/tts_errors.log
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
