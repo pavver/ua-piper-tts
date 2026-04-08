@@ -247,9 +247,9 @@ fn generate_mp3(
         .arg("-ac").arg("1")            // mono
         .arg("-i").arg("pipe:0")        // stdin
         .arg("-codec:a").arg("libmp3lame")
-        .arg("-b:a").arg("8k")          // 8 kbps
+        .arg("-b:a").arg("32k")         // 32 kbps — якість для мовлення
         .arg("-ac").arg("1")            // mono
-        .arg("-ar").arg("8000")         // 8 kHz
+        .arg("-ar").arg("22050")        // 22.05 kHz — оригінал Piper
         .arg(output_path)               // вихід
         .stdin(piper.stdout.take().ok_or("Не вдалося отримати stdout від piper")?)
         .stdout(Stdio::null())
