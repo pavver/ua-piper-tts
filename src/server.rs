@@ -193,6 +193,9 @@ fn generate_mp3(
 
     // Lame: stdin (WAV) → stdout (MP3) → файл
     let lame_output = Command::new("lame")
+        .arg("-b").arg("8")       // 8 kbps — мінімальний розмір
+        .arg("-m").arg("m")       // моно режим
+        .arg("--resample").arg("8") // 8 kHz (для мови достатньо)
         .arg("-") // stdin
         .arg(output_path.to_str().unwrap())
         .stdin(piper.stdout.take().ok_or("Не вдалося отримати stdout від piper")?)

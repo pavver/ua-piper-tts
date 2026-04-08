@@ -10,6 +10,63 @@ Rust викликає **Piper TTS** (CLI) через subprocess.
 - Спецсимволи → слова (°C → "градусів це́льсія" з наголосом)
 - Великі літери → маленькі (модель не підтримує uppercase)
 
+## Формат аудіо
+
+| Формат | Умова | Параметри |
+|--------|-------|-----------|
+| **MP3** | встановлено `lame` | 8 kbps, моно, 8 kHz |
+| **WAV** | `lame` відсутній | PCM WAV (без стиснення) |
+
+Формат визначається автоматично при запуску. Для мінімального розміру файлу використовується MP3 з бітрейтом 8 kbps у моно режимі.
+
+## Веб-сервер (REST API)
+
+### Запуск
+
+```bash
+cargo run
+```
+
+### Конфігурація (`config.json`)
+
+```json
+{
+    "output_dir": "./output",
+    "port": 9000,
+    "host": "0.0.0.0",
+    "speaker_id": 2,
+    "model_dir": "./models/piper-uk_UK-dmytro-medium"
+}
+```
+
+### Ендпоінти
+
+| Метод | Шлях | Опис |
+|-------|------|------|
+| `GET` | `/health` | Стан сервера |
+| `POST` | `/tts` | Генерація аудіо |
+
+### Приклад запиту
+
+```bash
+curl -X POST http://localhost:9000/tts \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Привіт світе", "overwrite": false}'
+```
+
+### Приклад відповіді
+
+```json
+{
+  "success": true,
+  "filename": "Привіт світе.mp3",
+  "message": "Аудіо згенеровано успішно",
+  "already_exists": false
+}
+```
+
+Параметр `overwrite`: `true` — перегенерувати файл, `false` — пропустити якщо існує.
+
 ## Моделі
 
 | Модель | Спікери | Якість |
@@ -34,6 +91,9 @@ source "$HOME/.cargo/env"
 
 # Piper TTS
 pip3 install piper-tts
+
+# MP3 кодування (опціонально, але рекомендовано)
+sudo apt-get install lame
 ```
 
 ### Крок 2: Клонуйте та завантажте модель
@@ -51,15 +111,16 @@ chmod +x download_models.sh
 cargo run
 ```
 
-Результат: `output/piper_ukrainian_tts_speaker_2.wav`
+Сервер запуститься на `http://0.0.0.0:9000`. Аудіо зберігається у `output/`.
 
-## Зміна тексту та спікера
+## Зміна спікера
 
-У `src/main.rs`:
+У `config.json`:
 
-```rust
-let text = "Ваш текст українською.";
-const SPEAKER_ID: i32 = 2; // 0=lada, 1=mykyta, 2=tetiana
+```json
+{
+    "speaker_id": 2  // 0=lada, 1=mykyta, 2=tetiana
+}
 ```
 
 ## Нормалізація чисел
@@ -82,9 +143,11 @@ const SPEAKER_ID: i32 = 2; // 0=lada, 1=mykyta, 2=tetiana
 ## Структура проекту
 
 ```
-├── Cargo.toml              # num2words, hound
+├── Cargo.toml              # num2words, hound, actix-web
+├── config.json             # Конфігурація сервера
 ├── src/
-│   ├── main.rs             # Виклик Piper CLI
+│   ├── main.rs             # Вхідна точка, завантаження конфігу
+│   ├── server.rs           # Веб-сервер, генерація аудіо (WAV/MP3)
 │   └── normalize.rs        # Нормалізація тексту (num2words)
 ├── download_models.sh      # Завантаження Piper моделі
 ├── models/                 # Моделі (в gitignore)
