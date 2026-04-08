@@ -212,16 +212,61 @@ The update script will:
 4. Rebuild the project
 5. Redeploy and restart the service
 
-## Number Normalization
+## Text Normalization
 
-| Input | Spoken As |
-|-------|-----------|
-| `25°C` | двадцять п'ять градусів це́льсія |
-| `36.6°C` | тридцять шість **і** шість градусів це́льсія |
-| `9.6°C` | дев'ять цілих шість десятих градусів це́льсія |
-| `-5°C` | мінус п'ять градусів це́льсія |
-| `100%` | сто відсотків |
-| `3.14` | три цілих чотирнадцять сотих |
+### How It Works
+
+Normalization is a 4-step pipeline. Each step can be called separately via `normalize_text_debug()` for debugging:
+
+| Step | Function | Description |
+|------|----------|-------------|
+| 1 | `step1_tokenize()` | Splits text into tokens (numbers+units, words, symbols) |
+| 2 | `step2_convert_numbers()` | Converts numbers → Ukrainian words, units → full names |
+| 3 | `step3_apply_stress()` | Adds stress marks via dictionaries |
+| 4 | `step4_cleanup()` | Normalizes whitespace |
+
+### Stress Dictionaries
+
+The project uses **two** stress dictionaries:
+
+| File | Source | Size | Priority |
+|------|--------|------|----------|
+| `data/ua_stress_dict.txt` | [lang-uk/ukrainian-word-stress-dictionary](https://github.com/lang-uk/ukrainian-word-stress-dictionary) | ~2.9M words | Lower |
+| `data/custom_stress_dict.txt` | Our custom dictionary | Growing | **Higher** |
+
+**How priority works:** main dictionary is loaded first, then custom — the latter **overrides** main dictionary entries. This allows fixing incorrect stress marks or adding new words.
+
+**Custom dictionary format:**
+```
+# Comments start with #
+вологі́сть          — new word with stress
+сі́мсот             — override existing
+міліме́трів         — unit of measurement
+```
+
+Stress is marked with U+0301 (combining acute accent) after a vowel.
+
+### What Gets Normalized
+
+| Type | Input | Output |
+|------|-------|--------|
+| Numbers | `25` | двадцять п'ять |
+| Temperatures | `36.6°C` | тридцять шість **і** шість градусів це́льсія |
+| Decimals ≤ 9 | `9.6°C` | дев'ять цілих шість десятих градусів це́льсія |
+| Negative | `-5°C` | мінус п'ять градусів це́льсія |
+| Percentages | `100%` | сто відсотків |
+| Units (Cyrillic) | `5 м`, `10 см`, `200 г` | п'ять метрів, десять сантиметрів, двісті грамів |
+| Units (Latin) | `220V`, `50Hz` | двісті двадцять вольт, п'ятдесят герц |
+| Pressure | `760 мм ртутного стовпця` | сімсот шістдесят міліметрів ртутного стовпця |
+| HA states | `on`, `off`, `open` | увімкнено, вимкнено, відчинено |
+
+### Unit Declension
+
+| Number | Form | Example |
+|--------|------|---------|
+| **1** | singular | один метр, один грам |
+| **2-4** | plural | два метри, три кілограми |
+| **5+** | genitive plural | п'ять метрів, десять грамів |
 
 ### Temperature Rule
 - Integer part **> 9**: short format `"36 і шість"`
@@ -245,17 +290,20 @@ This allows you to:
 ## Project Structure
 
 ```
-├── Cargo.toml              # num2words, hound, actix-web
-├── config.json             # Server configuration
+├── Cargo.toml                  # num2words, hound, actix-web
+├── config.json                 # Server configuration
 ├── src/
-│   ├── main.rs             # Entry point, config loading
-│   ├── server.rs           # Web server, audio generation (WAV/MP3)
-│   ├── normalize.rs        # Text normalization (num2words)
-│   └── error_log.rs        # TTS error logging
-├── download_models.sh      # Piper model download script
-├── models/                 # Models (gitignored)
-├── output/                 # Output (gitignored)
-└── tts_errors.log          # Error log (gitignored, auto-generated)
+│   ├── main.rs                 # Entry point, config loading
+│   ├── server.rs               # Web server, audio generation (WAV/MP3)
+│   ├── normalize.rs            # 4-step text normalization
+│   └── error_log.rs            # TTS error logging
+├── download_models.sh          # Piper model download script
+├── data/
+│   ├── ua_stress_dict.txt      # Main stress dictionary (lang-uk, 2.9M words)
+│   └── custom_stress_dict.txt  # Custom stress dictionary (higher priority)
+├── models/                     # Models (gitignored)
+├── output/                     # Output (gitignored)
+└── tts_errors.log              # Error log (gitignored, auto-generated)
 ```
 
 ## License

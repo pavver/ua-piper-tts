@@ -15,15 +15,17 @@
 ## 🏗 Architecture
 
 ```
-┌─────────────┐     ┌────────────────┐     ┌────────────┐
-│   Rust code │────▶│ normalize.rs   │────▶│  Piper CLI │
-│  main.rs    │     │ (num2words)    │     │  (subproc) │
-└─────────────┘     └────────────────┘     └────────────┘
-                           │                      │
-                      Normalized            WAV/MP3 file
-                      text (lowercase,          in output/
-                      numbers as words,
-                      stress marks)
+┌─────────────┐     ┌─────────────────────────────┐     ┌────────────┐
+│   Rust code │────▶│       normalize.rs          │────▶│  Piper CLI │
+│  main.rs    │     │  4-step pipeline:           │     │  (subproc) │
+└─────────────┘     │  1. tokenize()              │     └────────────┘
+                    │  2. convert_numbers()        │          │
+                    │  3. apply_stress()           │          ▼
+                    │  4. cleanup()                │    WAV/MP3 file
+                    └─────────────────────────────┘    in output/
+                               │
+                     Normalized text with
+                     stress marks (U+0301)
 ```
 
 ### Key Components
@@ -32,8 +34,10 @@
 |------|---------|
 | `src/main.rs` | Entry point, config loading, module imports |
 | `src/server.rs` | Web server (actix-web), request handling, WAV/MP3 generation |
-| `src/normalize.rs` | Normalization: numbers → words, special chars → words, stress marks |
+| `src/normalize.rs` | 4-step normalization: tokenize → convert → stress → cleanup |
 | `src/error_log.rs` | Logs Piper TTS errors to `tts_errors.log` for analysis |
+| `data/ua_stress_dict.txt` | Main stress dictionary (lang-uk, 2.9M words) |
+| `data/custom_stress_dict.txt` | Custom stress dictionary (higher priority, user-editable) |
 | `download_models.sh` | Downloads Piper model from HuggingFace |
 | `models/piper-uk_UK-dmytro-medium/` | ONNX model + espeak-ng data |
 
@@ -79,6 +83,33 @@ tokio = "1"         # Async runtime
 ---
 
 ## 📝 Text Normalization
+
+### Architecture: 4-Step Pipeline
+
+```
+Input text → step1_tokenize() → Tokens → step2_convert_numbers() → Words
+       → step3_apply_stress() → Stressed words → step4_cleanup() → Output
+```
+
+Each step is a separate function. Use `normalize_text_debug()` to inspect intermediate results.
+
+### Stress Dictionaries
+
+Two dictionaries are loaded in order (later entries override earlier ones):
+
+| File | Source | Size | Priority |
+|------|--------|------|----------|
+| `data/ua_stress_dict.txt` | lang-uk (GitHub) | ~2.9M words | Lower |
+| `data/custom_stress_dict.txt` | Our custom file | Growing | **Higher** |
+
+**Custom dictionary format:**
+```
+# Comments start with #
+вологі́сть          — new word with stress mark
+сі́мсот             — override existing entry
+```
+
+Stress is U+0301 (combining acute accent) placed after the vowel.
 
 ### Library: `num2words` (Rust crate)
 
@@ -134,6 +165,32 @@ Converts numbers to Ukrainian words with correct grammar.
 | `kHz` / `khz` | `кілоге́рц` |
 | `MHz` / `mhz` | `мегаге́рц` |
 | `GHz` / `ghz` | `гігаге́рц` |
+
+### Cyrillic Units
+
+| Unit | Replacement |
+|------|-------------|
+| `мм` | міліметр(и/ів) |
+| `см` | сантиметр(и/ів) |
+| `м` | метр(и/ів) |
+| `км` | кілометр(и/ів) |
+| `г` | грам(и/ів) |
+| `кг` | кілограм(и/ів) |
+| `л` | літр(и/ів) |
+| `мл` | мілілітр(и/ів) |
+
+### Unit Declension
+
+Units are declined based on the preceding number:
+- **1** → singular: `один метр`
+- **2-4** → plural: `два метри`, `три кілограми`
+- **5+** → genitive plural: `п'ять метрів`, `десять грамів`
+
+### Pressure: "мм рт. ст."
+
+Special handling for pressure readings:
+- `760 мм ртутного стовпця` → `сімсот шістдесят міліметрів ртутного стовпця`
+- `760 мм рт ст` → same result (abbreviated form supported)
 
 ### Apostrophe
 
@@ -323,6 +380,12 @@ The update script workflow:
 - [x] `/output/{filename}` endpoint for file serving
 - [x] Improved MP3 quality (32 kbps, 22.05 kHz)
 - [x] ffmpeg instead of lame for MP3 encoding
+- [x] 4-step normalization pipeline with debug support
+- [x] Stress dictionary integration (lang-uk, 2.9M words)
+- [x] Custom stress dictionary with higher priority
+- [x] Cyrillic unit support (мм, см, м, км, г, кг, л, мл)
+- [x] Unit declension based on number (1 метр, 2 метри, 5 метрів)
+- [x] Pressure unit special handling (мм рт. ст.)
 - [ ] Add ASR (speech recognition) — whisper.cpp or sherpa-onnx ASR
 - [ ] Add more Ukrainian models (if available)
 - [ ] NPU support (RKNN) — not yet working with Piper
