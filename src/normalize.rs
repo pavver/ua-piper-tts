@@ -62,6 +62,14 @@ fn decimal_to_ua(int_part: &str, dec_part: &str, is_temp: bool) -> String {
     }
 }
 
+fn num_to_ua_cardinal(num_str: &str) -> String {
+    if let Ok(n) = num_str.parse::<i64>() {
+        num2words::Num2Words::new(n).lang(Lang::Ukrainian).to_words()
+            .unwrap_or(num_str.to_string()).replace('ʼ', "'")
+            .replace("один цілих", "один цілий").replace("два цілих", "дві цілих")
+    } else { num_str.to_string() }
+}
+
 fn num_to_ua(num_str: &str) -> String {
     let (sign, unsigned) = if num_str.starts_with('-') { ("мінус ", &num_str[1..]) } else { ("", num_str) };
     if let Some(dot) = unsigned.find(|c| c == '.' || c == ',') {
@@ -92,16 +100,98 @@ fn with_stress(word: &str) -> String {
 
 fn find_unit(text: &str) -> Option<(usize, &'static str)> {
     let lower = text.to_lowercase();
-    let chars: Vec<char> = lower.chars().collect();
-    for end in (1..=chars.len()).rev() {
-        let candidate: String = chars[..end].iter().collect();
-        if let Some(&replacement) = UNIT_MAP.get(candidate.as_str()) { return Some((end, replacement)); }
+    // Тільки точні співпадіння (щоб "мінус" не співпадав з "м")
+    if let Some(&replacement) = UNIT_MAP.get(lower.as_str()) {
+        return Some((lower.len(), replacement));
     }
     None
 }
 
+/// Попередня обробка тексту:
+/// - "5-10 кг" → "від 5 до 10 кг" (діапазон з одиницею)
+/// - "4-3" → "4 мінус 3" (звичайне віднімання)
+fn preprocess_text(text: &str) -> String {
+    let mut result = String::new();
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    
+    while i < chars.len() {
+        // Перевіряємо чи це початок числа
+        if chars[i].is_ascii_digit() {
+            // Збираємо перше число
+            let mut num1_end = i;
+            while num1_end < chars.len() && (chars[num1_end].is_ascii_digit() || chars[num1_end] == '.' || chars[num1_end] == ',') {
+                num1_end += 1;
+            }
+            let num1: String = chars[i..num1_end].iter().collect();
+            
+            // Перевіряємо чи далі йде дефіс і друге число
+            if num1_end < chars.len() && chars[num1_end] == '-' {
+                let after_dash = num1_end + 1;
+                if after_dash < chars.len() && chars[after_dash].is_ascii_digit() {
+                    // Збираємо друге число
+                    let mut num2_end = after_dash;
+                    while num2_end < chars.len() && (chars[num2_end].is_ascii_digit() || chars[num2_end] == '.' || chars[num2_end] == ',') {
+                        num2_end += 1;
+                    }
+                    let num2: String = chars[after_dash..num2_end].iter().collect();
+                    
+                    // Перевіряємо чи після другого числа є одиниця виміру
+                    let remaining: String = chars[num2_end..].iter().collect();
+                    let remaining_trimmed = remaining.trim_start();
+                    let unit_candidate: String = remaining_trimmed.split_whitespace().next().unwrap_or("").to_lowercase();
+                    
+                    // Перевіряємо чи це відома одиниця (з урахуванням °c, °f, mm/s тощо)
+                    let mut is_range = false;
+                    let max_len = 10.min(unit_candidate.len());
+                    for unit_len in (1..=max_len).rev() {
+                        let candidate = &unit_candidate[..unit_len];
+                        if UNIT_MAP.contains_key(candidate) || candidate.starts_with('°') {
+                            is_range = true;
+                            break;
+                        }
+                    }
+                    
+                    if is_range {
+                        // Це діапазон: "від X до Y"
+                        result.push_str("від ");
+                        result.push_str(&num1);
+                        result.push_str(" до ");
+                        result.push_str(&num2);
+                        // Додаємо решту тексту після другого числа
+                        result.push_str(&remaining);
+                        i = chars.len();
+                        continue;
+                    } else {
+                        // Звичайне віднімання: "X мінус Y"
+                        result.push_str(&num1);
+                        result.push_str(" мінус ");
+                        result.push_str(&num2);
+                        // Додаємо решту тексту
+                        result.push_str(&chars[num2_end..].iter().collect::<String>());
+                        i = chars.len();
+                        continue;
+                    }
+                }
+            }
+            
+            // Не діапазон, просто число
+            result.push_str(&num1);
+            i = num1_end;
+        } else {
+            result.push(chars[i]);
+            i += 1;
+        }
+    }
+    
+    result
+}
+
 pub fn normalize_text(text: &str) -> String {
-    let words: Vec<&str> = text.split_whitespace().collect();
+    // Попередня обробка: діапазони та віднімання
+    let preprocessed = preprocess_text(text);
+    
+    let words: Vec<&str> = preprocessed.split_whitespace().collect();
     let mut result = Vec::new();
     let mut i = 0;
     while i < words.len() {
@@ -110,7 +200,7 @@ pub fn normalize_text(text: &str) -> String {
         if let Some(pos) = word.find('-') {
             let num_part = &word[..pos];
             let suffix = &word[pos+1..];
-            if let Ok(n) = num_part.parse::<i64>() {
+            if let Ok(_n) = num_part.parse::<i64>() {
                 if let Some(_gram) = Ukrainian::from_ordinal_suffix(suffix) {
                     if let Ok(ordinal) = Ukrainian::default().ordinal_from_text(word) {
                         result.push(ordinal);
@@ -120,15 +210,20 @@ pub fn normalize_text(text: &str) -> String {
             }
         }
         // Check for context-aware ordinal (e.g. "о 1 годині")
-        if word.parse::<i64>().is_ok() {
+        // Пропускаємо якщо це частина віднімання "X мінус Y"
+        if word.parse::<i64>().is_ok() && word != "мінус" {
             let prep = if i > 0 { Some(words[i - 1]) } else { None };
-            let next_word = if i + 1 < words.len() { Some(words[i + 1]) } else { None };
-            if let Ok(n) = word.parse::<i64>() {
-                let (g, d, n_count) = Ukrainian::analyze_ordinal_context(prep, word, next_word);
-                let u = Ukrainian::new(g, n_count, d);
-                if let Ok(ordinal) = u.to_ordinal(n.into()) {
-                    result.push(ordinal);
-                    i += 1; continue;
+            // Якщо наступне слово "мінус" - це віднімання, не ordinal
+            let next_is_minus = if i + 1 < words.len() { words[i + 1] == "мінус" } else { false };
+            if !next_is_minus {
+                let next_word = if i + 1 < words.len() { Some(words[i + 1]) } else { None };
+                if let Ok(n) = word.parse::<i64>() {
+                    let (g, d, n_count) = Ukrainian::analyze_ordinal_context(prep, word, next_word);
+                    let u = Ukrainian::new(g, n_count, d);
+                    if let Ok(ordinal) = u.to_ordinal(n.into()) {
+                        result.push(ordinal);
+                        i += 1; continue;
+                    }
                 }
             }
         }
@@ -191,4 +286,18 @@ mod tests {
         eprintln!("Result: '{}'", r);
         assert!(r.contains("першій"), "о 1 годині ночі → {}", r);
     }
+    #[test]
+    fn test_range_with_unit() {
+        let r = normalize_text("Вночі буде 0-3°");
+        eprintln!("Range: '{}'", r);
+        assert!(r.contains("від"), "0-3° → {}", r);
+        assert!(r.contains("до"), "0-3° → {}", r);
+    }
+    #[test]
+    fn test_subtraction_without_unit() {
+        let r = normalize_text("Обчисліть 4-3");
+        eprintln!("Subtraction: '{}'", r);
+        assert!(r.contains("мінус"), "4-3 → {}", r);
+    }
 }
+

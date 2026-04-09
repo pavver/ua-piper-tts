@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::io::Write;
 use std::fs;
+use uuid::Uuid;
 
 // ==================== Запити та відповіді ====================
 
@@ -16,6 +17,8 @@ pub struct TtsRequest {
     pub text: String,
     #[serde(default)]
     pub overwrite: bool,
+    #[serde(default)]
+    pub filename: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -64,10 +67,15 @@ async fn tts(req: web::Json<TtsRequest>, data: web::Data<AppState>) -> HttpRespo
         });
     }
 
-    // Формуємо ім'я файлу (MP3 або WAV)
-    let filename_base = safe_filename(text);
+    // Визначаємо ім'я файлу
     let extension = if has_ffmpeg() { "mp3" } else { "wav" };
-    let filename = format!("{}.{}", filename_base, extension);
+    let filename = if let Some(ref name) = req.filename {
+        // Демо-сервер передав ім'я (UUID) — використовуємо його
+        format!("{}.{}", name, extension)
+    } else {
+        // Ім'я не передано — генеруємо з тексту (кирилиця)
+        format!("{}.{}", safe_filename(text), extension)
+    };
     let output_path = data.config.output_path().join(&filename);
 
     // Перевіряємо чи файл вже існує
@@ -234,6 +242,11 @@ fn generate_mp3(
         }
     }
 
+    if !piper_output.status.success() {
+        let piper_stderr = String::from_utf8_lossy(&piper_output.stderr);
+        return Err(format!("piper завершився з кодом {:?}: {}", piper_output.status.code(), piper_stderr.trim()));
+    }
+
     if !ffmpeg_output.status.success() {
         let stderr = String::from_utf8_lossy(&ffmpeg_output.stderr);
         return Err(format!("ffmpeg помилка: {}", stderr.trim()));
@@ -271,31 +284,6 @@ fn find_piper() -> Option<PathBuf> {
     None
 }
 
-// ==================== Віддача файлів ====================
-
-#[get("/output/{filename}")]
-async fn get_output(
-    path: web::Path<String>,
-    data: web::Data<AppState>,
-) -> HttpResponse {
-    let filename = path.into_inner();
-    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
-        return HttpResponse::BadRequest().body("Некоректне ім'я файлу");
-    }
-    let file_path = data.config.output_path().join(&filename);
-    if !file_path.exists() {
-        return HttpResponse::NotFound().body(format!("Файл не знайдено: {}", filename));
-    }
-    let content_type = if filename.ends_with(".mp3") { "audio/mpeg" } else { "audio/wav" };
-    match fs::read(&file_path) {
-        Ok(bytes) => HttpResponse::Ok()
-            .content_type(content_type)
-            .insert_header(("Accept-Ranges", "bytes"))
-            .body(bytes),
-        Err(_) => HttpResponse::InternalServerError().body("Не вдалося прочитати файл"),
-    }
-}
-
 // ==================== Запуск сервера ====================
 
 pub async fn start_server(config: AppConfig) -> std::io::Result<()> {
@@ -320,7 +308,6 @@ pub async fn start_server(config: AppConfig) -> std::io::Result<()> {
             .app_data(web::Data::new(AppState { config: config.clone() }))
             .service(tts)
             .service(health)
-            .service(get_output)
     })
     .bind((host.as_str(), port))?
     .run()
