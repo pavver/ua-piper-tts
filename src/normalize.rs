@@ -1,7 +1,5 @@
 /// Нормалізація українського тексту для Piper TTS.
-use num2words::Lang;
-use num2words::Ukrainian;
-use num2words::Language;
+use num2words::UkContext;
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
@@ -31,61 +29,16 @@ static UNIT_MAP: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|
     m
 });
 
-fn decimal_suffix(digits: usize) -> &'static str {
-    match digits { 1 => "десятих", 2 => "сотих", 3 => "тисячних", 4 => "десяти тисячних", 5 => "сот тисячних", 6 => "мільйонних", _ => "десятих" }
-}
-
-fn int_to_ua(unsigned: &str) -> String {
-    if let Ok(n) = unsigned.parse::<f64>() {
-        num2words::Num2Words::new(n).lang(Lang::Ukrainian).to_words()
-            .unwrap_or(unsigned.to_string()).replace('ʼ', "'")
-            .replace("один цілих", "один цілий").replace("два цілих", "дві цілих")
-    } else { unsigned.to_string() }
-}
-
-fn decimal_to_ua(int_part: &str, dec_part: &str, is_temp: bool) -> String {
-    let int_val = int_part.parse::<i64>().unwrap_or(0);
-    let int_words = if int_part.is_empty() || int_part == "0" { "нуль".to_string() } else { int_to_ua(int_part) };
-    let dec_digits: Vec<_> = dec_part.chars().filter(|c| c.is_ascii_digit()).collect();
-    let dec_clean: String = dec_digits.iter().collect();
-    if is_temp && int_val > 9 && dec_digits.len() == 1 {
-        let digit_word = if let Some(d) = dec_digits.first().and_then(|c| c.to_digit(10)) {
-            num2words::Num2Words::new(d as f64).lang(Lang::Ukrainian).to_words().unwrap_or(dec_clean.clone()).replace('ʼ', "'")
-        } else { dec_clean };
-        format!("{} і {}", int_words, digit_word)
-    } else {
-        let dec_words = if dec_clean.is_empty() { "нуль".to_string() }
-        else if let Ok(n) = dec_clean.parse::<f64>() {
-            num2words::Num2Words::new(n).lang(Lang::Ukrainian).to_words().unwrap_or(dec_clean.clone()).replace('ʼ', "'")
-        } else { dec_clean };
-        format!("{} цілих {} {}", int_words, dec_words, decimal_suffix(dec_digits.len()))
-    }
-}
-
-fn num_to_ua_cardinal(num_str: &str) -> String {
-    if let Ok(n) = num_str.parse::<i64>() {
-        num2words::Num2Words::new(n).lang(Lang::Ukrainian).to_words()
-            .unwrap_or(num_str.to_string()).replace('ʼ', "'")
-            .replace("один цілих", "один цілий").replace("два цілих", "дві цілих")
-    } else { num_str.to_string() }
-}
-
 fn num_to_ua(num_str: &str) -> String {
-    let (sign, unsigned) = if num_str.starts_with('-') { ("мінус ", &num_str[1..]) } else { ("", num_str) };
-    if let Some(dot) = unsigned.find(|c| c == '.' || c == ',') {
-        format!("{}{}", sign, decimal_to_ua(&unsigned[..dot], &unsigned[dot+1..], false))
-    } else if let Ok(n) = unsigned.parse::<f64>() {
-        format!("{}{}", sign, num2words::Num2Words::new(n).lang(Lang::Ukrainian).to_words().unwrap_or(unsigned.to_string()).replace('ʼ', "'"))
-    } else { format!("{}{}", sign, unsigned) }
-}
-
-fn temp_to_ua(num_str: &str) -> String {
-    let (sign, unsigned) = if num_str.starts_with('-') { ("мінус ", &num_str[1..]) } else { ("", num_str) };
-    if let Some(dot) = unsigned.find(|c| c == '.' || c == ',') {
-        format!("{}{}", sign, decimal_to_ua(&unsigned[..dot], &unsigned[dot+1..], true))
-    } else if let Ok(n) = unsigned.parse::<f64>() {
-        format!("{}{}", sign, num2words::Num2Words::new(n).lang(Lang::Ukrainian).to_words().unwrap_or(unsigned.to_string()).replace('ʼ', "'"))
-    } else { format!("{}{}", sign, unsigned) }
+    // Спочатку пробуємо UkContext (цілі числа з контекстом)
+    if let Ok(r) = UkContext::analyze(None, num_str, None) {
+        return r.replace('ʼ', "'");
+    }
+    // Fallback для десяткових
+    if let Ok(n) = num_str.parse::<f64>() {
+        num2words::Num2Words::new(n).lang(num2words::Lang::Ukrainian).cardinal().to_words()
+            .unwrap_or(num_str.to_string()).replace('ʼ', "'")
+    } else { num_str.to_string() }
 }
 
 fn with_stress(word: &str) -> String {
@@ -143,10 +96,11 @@ fn preprocess_text(text: &str) -> String {
                     
                     // Перевіряємо чи це відома одиниця (з урахуванням °c, °f, mm/s тощо)
                     let mut is_range = false;
-                    let max_len = 10.min(unit_candidate.len());
+                    let unit_chars: Vec<char> = unit_candidate.chars().collect();
+                    let max_len = 10.min(unit_chars.len());
                     for unit_len in (1..=max_len).rev() {
-                        let candidate = &unit_candidate[..unit_len];
-                        if UNIT_MAP.contains_key(candidate) || candidate.starts_with('°') {
+                        let candidate: String = unit_chars[..unit_len].iter().collect();
+                        if UNIT_MAP.contains_key(candidate.as_str()) || candidate.starts_with('°') {
                             is_range = true;
                             break;
                         }
@@ -190,51 +144,45 @@ fn preprocess_text(text: &str) -> String {
 pub fn normalize_text(text: &str) -> String {
     // Попередня обробка: діапазони та віднімання
     let preprocessed = preprocess_text(text);
-    
+
     let words: Vec<&str> = preprocessed.split_whitespace().collect();
     let mut result = Vec::new();
     let mut i = 0;
     while i < words.len() {
         let word = words[i];
-        // Check for ordinal with suffix: "43-ї"
-        if let Some(pos) = word.find('-') {
-            let num_part = &word[..pos];
-            let suffix = &word[pos+1..];
-            if let Ok(_n) = num_part.parse::<i64>() {
-                if let Some(_gram) = Ukrainian::from_ordinal_suffix(suffix) {
-                    if let Ok(ordinal) = Ukrainian::default().ordinal_from_text(word) {
-                        result.push(ordinal);
-                        i += 1; continue;
-                    }
-                }
-            }
-        }
-        // Check for context-aware ordinal (e.g. "о 1 годині")
-        // Пропускаємо якщо це частина віднімання "X мінус Y"
-        if word.parse::<i64>().is_ok() && word != "мінус" {
-            let prep = if i > 0 { Some(words[i - 1]) } else { None };
-            // Якщо наступне слово "мінус" - це віднімання, не ordinal
-            let next_is_minus = if i + 1 < words.len() { words[i + 1] == "мінус" } else { false };
-            if !next_is_minus {
-                let next_word = if i + 1 < words.len() { Some(words[i + 1]) } else { None };
-                if let Ok(n) = word.parse::<i64>() {
-                    let (g, d, n_count) = Ukrainian::analyze_ordinal_context(prep, word, next_word);
-                    let u = Ukrainian::new(g, n_count, d);
-                    if let Ok(ordinal) = u.to_ordinal(n.into()) {
-                        result.push(ordinal);
-                        i += 1; continue;
-                    }
-                }
-            }
-        }
-        // Number+unit: "220V"
+        let prev = if i > 0 { Some(words[i - 1]) } else { None };
+        let next = if i + 1 < words.len() { Some(words[i + 1]) } else { None };
+        let next_is_minus = next == Some("мінус");
+
+        // Number+unit: "220V" — обробляємо окремо бо одиниця в тому самому слові
         if let Some((num_str, unit)) = split_number_unit(word) {
-            result.push(num_to_ua(&num_str));
+            let num_word = UkContext::analyze(prev, &num_str, next)
+                .unwrap_or(num_str.clone()).replace('ʼ', "'");
+            result.push(num_word);
             if let Some((_, u)) = find_unit(&unit.to_lowercase()) {
                 result.push(with_stress(u).to_string());
             }
             i += 1; continue;
         }
+
+        // Число з контекстом (UkContext сам визначить cardinal/ordinal)
+        // Пропускаємо "мінус" як окреме слово (частина віднімання "X мінус Y")
+        if !next_is_minus {
+            if let Ok(num_word) = UkContext::analyze(prev, word, next) {
+                result.push(num_word.replace('ʼ', "'"));
+                i += 1; continue;
+            }
+            // Fallback: десяткове число
+            if let Ok(n) = word.parse::<f64>() {
+                if let Ok(num_word) = num2words::Num2Words::new(n)
+                    .lang(num2words::Lang::Ukrainian).cardinal().to_words() {
+                    result.push(num_word.replace('ʼ', "'"));
+                    i += 1; continue;
+                }
+            }
+        }
+
+        // Звичайне слово / одиниця
         let lower = word.to_lowercase();
         if let Some((_, u)) = find_unit(&lower) { result.push(with_stress(u).to_string()); } else { result.push(lower); }
         i += 1;
@@ -261,7 +209,8 @@ mod tests {
     use super::*;
     #[test]
     fn test_decimals() {
-        assert!(int_to_ua("36.6").contains("цілих"));
+        let r = num_to_ua("36.6");
+        assert!(r.contains("цілих"), "36.6 → {}", r);
         let r = normalize_text("100%");
         assert!(r.contains("сто"), "100% → {}", r);
     }
@@ -272,8 +221,8 @@ mod tests {
     }
     #[test]
     fn test_ordinal_suffix_hyphen() {
-        assert_eq!(Ukrainian::default().ordinal_from_text("43-ї").unwrap(), "сорок третьої");
-        assert_eq!(Ukrainian::default().ordinal_from_text("43-й").unwrap(), "сорок третій");
+        assert_eq!(UkContext::analyze(None, "43-ї", None).unwrap(), "сорок третьої");
+        assert_eq!(UkContext::analyze(None, "43-й", None).unwrap(), "сорок третій");
     }
     #[test]
     fn test_ha_states() {

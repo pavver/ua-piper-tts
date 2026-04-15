@@ -53,7 +53,7 @@ tokio = "1"         # Async runtime
 
 - **piper-tts** (`pip3 install piper-tts`) — provides `piper` CLI binary
 - **ONNX Runtime** — auto-installed with piper-tts
-- **lame** (optional) — for MP3 encoding
+- **ffmpeg** (optional) — for MP3 encoding (raw PCM piped to ffmpeg with libmp3lame codec)
 
 ---
 
@@ -329,4 +329,4 @@ The update script workflow:
 
 ---
 
-*Last updated: April 7, 2025*
+*Last updated: April 12, 2026*
