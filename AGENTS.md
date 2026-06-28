@@ -28,11 +28,11 @@
 
 ### Key Components
 
-| File | Purpose |
-|------|---------|
+| File/Folder | Purpose |
+|-------------|---------|
 | `src/main.rs` | Entry point, config loading, module imports |
 | `src/server.rs` | Web server (actix-web), request handling, WAV/MP3 generation |
-| `src/normalize.rs` | Normalization: numbers → words, special chars → words, stress marks |
+| `src/normalize/` | Modular normalization pipeline: lexer, parser, generator, preprocessor |
 | `src/error_log.rs` | Logs Piper TTS errors to `tts_errors.log` for analysis |
 | `download_models.sh` | Downloads Piper model from HuggingFace |
 | `models/piper-uk_UK-dmytro-medium/` | ONNX model + espeak-ng data |
@@ -41,7 +41,7 @@
 
 ```toml
 hound = "3.5"       # Audio handling
-num2words = "1.2"   # Number → Ukrainian words conversion
+num2words = { git = "https://github.com/pavver/num2words_v2" } # Fork with Ukrainian grammar fixes
 actix-web = "4"     # Web framework
 actix-files = "0.6" # Static file serving
 serde = "1"         # Serialization
@@ -181,15 +181,15 @@ Solution: `.replace('ʼ', "'")` after every conversion.
 3. **speaker_2 default** — tetiana (female voice)
 4. **Lowercase required** — mandatory before passing to Piper
 5. **Stress marks** — U+0301 for key words (це́льсія)
-6. **Tests required** — every change to `normalize.rs` must have tests
+6. **Tests required** — every change to the normalization logic must be verified by tests in `src/normalize/mod.rs`
 7. **Clean build** — `cargo build` must pass without warnings
 8. **Error logging** — all Piper errors logged to `tts_errors.log` via `error_log.rs`
 
 ### How to Add a New Special Character
 
-1. In `normalize.rs` find the `while let Some(c) = chars.next()` block
-2. Add `else if` for the new character
-3. Add a test in `mod tests`
+1. If it's a punctuation character, update `split_punctuation` in `src/normalize/lexer.rs`.
+2. If it's a multiplier or context unit, update the parser in `src/normalize/parser.rs` and the unit map `UNIT_MAP` in `src/abbr.rs`.
+3. Add a test in `src/normalize/mod.rs` inside the `mod tests` block.
 
 ### How to Add a New Model
 
@@ -280,17 +280,16 @@ The update script workflow:
 ## 📁 Structure
 
 ```
-├── Cargo.toml              # num2words = "1.2", actix-web, serde
+├── Cargo.toml              # num2words git fork, actix-web, serde
 ├── Cargo.lock              # Fixed versions
 ├── config.json             # Server configuration
 ├── README.md               # English documentation
 ├── README_UK.md            # Ukrainian documentation
 ├── AGENTS.md               # This file — AI agent instructions
-├── TODO_NUM2WORDS.md       # num2words library issues
 ├── download_models.sh      # Model download script
 ├── scripts/
 │   ├── install_deps.sh     # Dependency installer
-│   ├── build.sh            # Build script (with cross-compile)
+│   ├── build.sh            # Build script (with cross-compilation)
 │   ├── deploy.sh           # Deployment & service manager
 │   ├── update.sh           # Pull, rebuild, restart from GitHub
 │   ├── quickstart.sh       # One-command setup
@@ -298,7 +297,14 @@ The update script workflow:
 ├── src/
 │   ├── main.rs             # Entry point, config loading
 │   ├── server.rs           # Web server, audio generation (WAV/MP3)
-│   ├── normalize.rs        # Text normalization (num2words)
+│   ├── normalize/          # Modular normalizer pipeline
+│   │   ├── mod.rs          # Entry point and tests
+│   │   ├── types.rs        # RawToken, Token, NumberValue
+│   │   ├── helpers.rs      # Number formats (int_to_ua, decimal_to_ua, num_to_ua)
+│   │   ├── preprocessor.rs # Paragraphs & mathematical range scanner
+│   │   ├── lexer.rs        # Scanner and character tokenization
+│   │   ├── parser.rs       # Semantic parser & unit lookup
+│   │   └── generator.rs    # Text renderer
 │   └── error_log.rs        # TTS error logging
 ├── models/                 # .gitignore
 │   └── piper-uk_UK-dmytro-medium/
