@@ -6,3 +6,8 @@ models/
 *.mp3
 Cargo.lock
 tts_errors.log
+num2words_v2
+/scratch
+/task.md
+/walkthrough.md
+

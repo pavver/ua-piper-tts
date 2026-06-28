@@ -1,5 +1,4 @@
 use crate::normalize::normalize_text;
-use crate::safe_filename;
 use crate::AppConfig;
 use crate::error_log::log_tts_error;
 use actix_web::{web, App, HttpResponse, HttpServer, get, post};
@@ -7,26 +6,19 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::io::Write;
-use std::fs;
-use uuid::Uuid;
+
 
 // ==================== Запити та відповіді ====================
 
 #[derive(Deserialize)]
 pub struct TtsRequest {
     pub text: String,
-    #[serde(default)]
-    pub overwrite: bool,
-    #[serde(default)]
-    pub filename: Option<String>,
 }
 
 #[derive(Serialize)]
-pub struct TtsResponse {
+pub struct TtsErrorResponse {
     pub success: bool,
-    pub filename: String,
-    pub message: String,
-    pub already_exists: bool,
+    pub error: String,
 }
 
 #[derive(Serialize)]
@@ -59,79 +51,44 @@ async fn health(data: web::Data<AppState>) -> HttpResponse {
 async fn tts(req: web::Json<TtsRequest>, data: web::Data<AppState>) -> HttpResponse {
     let text = req.text.trim();
     if text.is_empty() {
-        return HttpResponse::BadRequest().json(TtsResponse {
+        return HttpResponse::BadRequest().json(TtsErrorResponse {
             success: false,
-            filename: String::new(),
-            message: "Порожній текст".to_string(),
-            already_exists: false,
-        });
-    }
-
-    // Визначаємо ім'я файлу
-    let extension = if has_ffmpeg() { "mp3" } else { "wav" };
-    let filename = if let Some(ref name) = req.filename {
-        // Демо-сервер передав ім'я (UUID) — використовуємо його
-        format!("{}.{}", name, extension)
-    } else {
-        // Ім'я не передано — генеруємо з тексту (кирилиця)
-        format!("{}.{}", safe_filename(text), extension)
-    };
-    let output_path = data.config.output_path().join(&filename);
-
-    // Перевіряємо чи файл вже існує
-    if output_path.exists() && !req.overwrite {
-        return HttpResponse::Ok().json(TtsResponse {
-            success: true,
-            filename: filename.clone(),
-            message: "Файл вже існує, overwrite=false".to_string(),
-            already_exists: true,
-        });
-    }
-
-    // Забезпечуємо існування директорії
-    if let Err(e) = fs::create_dir_all(data.config.output_path()) {
-        return HttpResponse::InternalServerError().json(TtsResponse {
-            success: false,
-            filename: String::new(),
-            message: format!("Не вдалося створити директорію: {}", e),
-            already_exists: false,
+            error: "Порожній текст".to_string(),
         });
     }
 
     // Нормалізуємо текст
     let normalized = normalize_text(text);
 
-    // Генерація аудіо
-    let result = if extension == "mp3" {
-        generate_mp3(&normalized, &output_path, &data.config)
+    let use_mp3 = has_ffmpeg();
+
+    // Генерація аудіо в пам'яті
+    let result = if use_mp3 {
+        generate_mp3_in_memory(&normalized, &data.config)
+            .map(|bytes| (bytes, "audio/mpeg"))
     } else {
-        generate_wav(&normalized, &output_path, &data.config)
+        generate_wav_in_memory(&normalized, &data.config)
+            .map(|bytes| (bytes, "audio/wav"))
     };
 
     match result {
-        Ok(()) => HttpResponse::Ok().json(TtsResponse {
-            success: true,
-            filename: filename.clone(),
-            message: "Аудіо згенеровано успішно".to_string(),
-            already_exists: false,
-        }),
-        Err(e) => HttpResponse::InternalServerError().json(TtsResponse {
+        Ok((bytes, mime_type)) => HttpResponse::Ok()
+            .content_type(mime_type)
+            .body(bytes),
+        Err(e) => HttpResponse::InternalServerError().json(TtsErrorResponse {
             success: false,
-            filename: String::new(),
-            message: format!("Помилка генерації: {}", e),
-            already_exists: false,
+            error: format!("Помилка генерації: {}", e),
         }),
     }
 }
 
 // ==================== Генерація аудіо ====================
 
-/// Генерація WAV через Piper CLI
-fn generate_wav(
+/// Генерація WAV через Piper CLI в пам'ять (stdout)
+fn generate_wav_in_memory(
     normalized_text: &str,
-    output_path: &PathBuf,
     config: &AppConfig,
-) -> Result<(), String> {
+) -> Result<Vec<u8>, String> {
     let piper_bin = find_piper().ok_or("piper не знайдено! pip3 install piper-tts")?;
     let model_onnx = config.model_dir().join("model.onnx");
     let model_json = config.model_dir().join("model.onnx.json");
@@ -140,19 +97,23 @@ fn generate_wav(
         return Err(format!("Модель не знайдена: {:?}", model_onnx));
     }
 
+    // За замовчуванням piper пише WAV у stdout, якщо не вказано --output_file
     let mut child = Command::new(&piper_bin)
         .arg("--model").arg(&model_onnx)
         .arg("--config").arg(&model_json)
-        .arg("--output_file").arg(output_path)
         .arg("--speaker").arg(config.speaker_id.to_string())
         .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())  // Перехоплюємо stderr
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("Не вдалося запустити piper: {}", e))?;
 
     if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(normalized_text.as_bytes())
+        let mut text_to_send = normalized_text.to_string();
+        if !text_to_send.ends_with('\n') {
+            text_to_send.push('\n');
+        }
+        stdin.write_all(text_to_send.as_bytes())
             .map_err(|e| format!("Помилка запису в stdin: {}", e))?;
     }
 
@@ -162,7 +123,6 @@ fn generate_wav(
     // Перевіряємо stderr на помилки
     if !output.stderr.is_empty() {
         let stderr_text = String::from_utf8_lossy(&output.stderr);
-        // Якщо є помилки в stderr, логуємо їх
         if !stderr_text.trim().is_empty() {
             log_tts_error(&stderr_text, normalized_text);
         }
@@ -173,19 +133,14 @@ fn generate_wav(
         return Err(format!("piper завершився з кодом {:?}: {}", output.status.code(), stderr_text.trim()));
     }
 
-    if !output_path.exists() {
-        return Err("Файл не створено".to_string());
-    }
-
-    Ok(())
+    Ok(output.stdout)
 }
 
-/// Генерація MP3: piper --output-raw (PCM) → ffmpeg → MP3 файл
-fn generate_mp3(
+/// Генерація MP3: piper --output-raw (PCM) → ffmpeg → MP3 в пам'яті (stdout)
+fn generate_mp3_in_memory(
     normalized_text: &str,
-    output_path: &PathBuf,
     config: &AppConfig,
-) -> Result<(), String> {
+) -> Result<Vec<u8>, String> {
     let piper_bin = find_piper().ok_or("piper не знайдено!")?;
     let model_onnx = config.model_dir().join("model.onnx");
     let model_json = config.model_dir().join("model.onnx.json");
@@ -208,12 +163,16 @@ fn generate_mp3(
 
     // Пишемо текст в piper
     if let Some(mut stdin) = piper.stdin.take() {
-        stdin.write_all(normalized_text.as_bytes())
+        let mut text_to_send = normalized_text.to_string();
+        if !text_to_send.ends_with('\n') {
+            text_to_send.push('\n');
+        }
+        stdin.write_all(text_to_send.as_bytes())
             .map_err(|e| format!("Помилка запису в piper: {}", e))?;
     }
 
-    // ffmpeg: stdin (raw PCM) → MP3 файл
-    let ffmpeg_output = Command::new("ffmpeg")
+    // ffmpeg: stdin (raw PCM) → stdout (MP3)
+    let ffmpeg = Command::new("ffmpeg")
         .arg("-y")
         .arg("-f").arg("s16le")
         .arg("-ar").arg("22050")
@@ -223,12 +182,16 @@ fn generate_mp3(
         .arg("-b:a").arg("32k")
         .arg("-ac").arg("1")
         .arg("-ar").arg("22050")
-        .arg(output_path.to_str().unwrap())
+        .arg("-f").arg("mp3")
+        .arg("pipe:1")
         .stdin(piper.stdout.take().ok_or("Не вдалося отримати stdout від piper")?)
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
+        .spawn()
         .map_err(|e| format!("Не вдалося запустити ffmpeg: {}", e))?;
+
+    let ffmpeg_output = ffmpeg.wait_with_output()
+        .map_err(|e| format!("Не вдалося дочекатись ffmpeg: {}", e))?;
 
     // Чекаємо завершення Piper і отримуємо stderr
     let piper_output = piper.wait_with_output()
@@ -252,11 +215,7 @@ fn generate_mp3(
         return Err(format!("ffmpeg помилка: {}", stderr.trim()));
     }
 
-    if !output_path.exists() {
-        return Err("MP3 файл не створено".to_string());
-    }
-
-    Ok(())
+    Ok(ffmpeg_output.stdout)
 }
 
 /// Перевірка чи встановлено ffmpeg

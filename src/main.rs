@@ -1,4 +1,6 @@
 mod normalize;
+mod stress;
+mod abbr;
 mod server;
 mod error_log;
 

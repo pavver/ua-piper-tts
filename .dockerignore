@@ -1,0 +1,5 @@
+target/
+output/
+*.wav
+*.mp3
+tts_errors.log
