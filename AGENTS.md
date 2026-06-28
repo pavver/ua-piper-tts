@@ -16,8 +16,8 @@
 
 ```
 ┌─────────────┐     ┌────────────────┐     ┌────────────┐
-│   Rust code │────▶│ normalize.rs   │────▶│  Piper CLI │
-│  main.rs    │     │ (num2words)    │     │  (subproc) │
+│   Rust code │────▶│ normalize/     │────▶│  Piper CLI │
+│  main.rs    │     │ (token pipeline)────▶│  (subproc) │
 └─────────────┘     └────────────────┘     └────────────┘
                            │                      │
                       Normalized            WAV/MP3 file
@@ -25,6 +25,13 @@
                       numbers as words,
                       stress marks)
 ```
+
+### The Tokenization Pipeline
+
+The normalizer uses a modular three-phase pipeline:
+1. **Lexer** (`lexer.rs`): Segments text into raw token fragments (words, numbers, punctuation, spaces, times, dates).
+2. **Parser** (`parser.rs`): Analyzes preceding/following tokens to resolve semantic relations (attaching prepositions, merging units, applying multiplier scales).
+3. **Generator** (`generator.rs`): Translates tokens into standard Ukrainian speech phrases, applying grammar rules and stress marks.
 
 ### Key Components
 
@@ -140,6 +147,13 @@ Converts numbers to Ukrainian words with correct grammar.
 `num2words` uses U+02BC (`ʼ`), but Piper only understands U+0027 (`'`).
 Solution: `.replace('ʼ', "'")` after every conversion.
 
+### Thousand Multipliers (к / k)
+
+Technical numbers followed by `к` or `k` (case-insensitive, optionally with trailing dots or separated by spaces) are multiplied by `1000`:
+- `1.5к кг` ➔ `"тисяча п'ятсот кілограмів"`
+- `2.5 к` ➔ `"дві тисячі п'ятсот"`
+- `1 k.` ➔ `"тисяча"`
+
 ---
 
 ## 🐛 Known Issues & Solutions History
@@ -164,11 +178,7 @@ Solution: `.replace('ʼ', "'")` after every conversion.
 **Cause:** num2words uses "кома ..." format by default.
 **Solution:** Custom `decimal_to_ua()` logic with correct suffixes.
 
-### 6. Python zoo
-**Cause:** Initially used Python script for normalization.
-**Solution:** Moved everything to Rust via `num2words` crate.
-
-### 7. Piper TTS errors with unknown characters
+### 6. Piper TTS errors with unknown characters
 **Cause:** Piper couldn't recognize some special characters and output errors to stderr, which were ignored.
 **Solution:** Added `error_log.rs` module that captures Piper stderr and writes errors to `tts_errors.log` along with the triggering text for analysis.
 
@@ -217,6 +227,9 @@ cargo test
 
 # Tests with output
 cargo test -- --nocapture
+
+# Run specific test with logs
+cargo test <test_name> -- --nocapture
 ```
 
 ## 🚀 Deployment Scripts
@@ -320,19 +333,18 @@ The update script workflow:
 
 ## 🔮 Future Improvements
 
-- [x] Log Piper TTS errors to file for analysis
+- [ ] Add more Ukrainian models (if available)
+- [ ] Speaker selection support
+
+## 🌟 Completed Features
+
+- [x] Transitioned normalizer to modular Lexer-Parser-Generator architecture
+- [x] Log Piper TTS errors to file for analysis (`error_log.rs`)
 - [x] Automated deployment scripts (install, build, deploy)
 - [x] Systemd service integration
 - [x] Cross-compilation support (x86_64, aarch64, armv7)
 - [x] Automated update script (pull, rebuild, restart)
-- [ ] Add ASR (speech recognition) — whisper.cpp or sherpa-onnx ASR
-- [ ] Add more Ukrainian models (if available)
-- [ ] NPU support (RKNN) — not yet working with Piper
-- [ ] Streaming TTS — chunked generation for long texts
-- [ ] Caching — don't regenerate identical text
-- [ ] Speaker selection via CLI argument
-- [ ] Auto-fix known errors based on `tts_errors.log`
 
 ---
 
-*Last updated: April 12, 2026*
+*Last updated: 28.06.2026*
