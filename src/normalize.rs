@@ -1,14 +1,186 @@
 /// Нормалізація українського тексту для Piper TTS.
-/// Архітектура: кожен крок — окрема функція для простого дебагу та надійності.
+/// Архітектура: Лексер (Токенізація) -> Контекстний парсер -> Генератор слів.
 
 use num2words::{UkContext, Lang};
 use crate::abbr::{
     is_abbreviation, expand_abbreviation, expand_abbr_contextual,
-    get_context_noun, get_unit_form, find_unit, ABBR_MAP, is_preposition
+    get_context_noun, get_unit_form, find_unit, ABBR_MAP, is_preposition,
+    Gender
 };
 use crate::stress::{apply_stress, with_stress_units, STRESS_DICT};
 
+// ==================== Токени та внутрішні структури ====================
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum NumberValue {
+    Integer(i64),
+    Decimal {
+        int_part: i64,
+        dec_part: u32,
+        dec_places: usize,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum RawToken {
+    Word(String),
+    Number {
+        raw: String,
+        is_negative: bool,
+        int_part: String,
+        dec_part: Option<String>,
+        suffix: Option<String>,
+    },
+    Time {
+        hours: String,
+        minutes: String,
+        seconds: Option<String>,
+    },
+    Date {
+        day: String,
+        month: String,
+        year: Option<String>,
+    },
+    Punctuation(char),
+    Whitespace(String),
+}
+
+#[derive(Debug, Clone)]
+pub enum Token {
+    Word {
+        text: String,
+        is_abbr: bool,
+    },
+    Number {
+        raw: String,
+        is_negative: bool,
+        value: NumberValue,
+        suffix: Option<String>,
+        unit: Option<String>,
+        context_noun: Option<String>,
+        preposition: Option<String>,
+        governed_by_decimal: bool,
+        gender: Gender,
+    },
+    Time {
+        hours: u8,
+        minutes: u8,
+        seconds: Option<u8>,
+        preposition: Option<String>,
+    },
+    Date {
+        day: u8,
+        month: u8,
+        year: Option<u16>,
+        preposition: Option<String>,
+    },
+    Punctuation(char),
+    Whitespace(String),
+}
+
+// ==================== КРОК 0: Попередня обробка тексту ====================
+
+fn step0_fix_paragraphs(text: &str) -> String {
+    let mut result = String::with_capacity(text.len() + 32);
+    let mut prev_char: Option<char> = None;
+    let mut consecutive_newlines = 0;
+
+    for c in text.chars() {
+        if c == '\n' {
+            consecutive_newlines += 1;
+        } else if c == '\r' {
+            // Пропускаємо
+        } else {
+            if consecutive_newlines >= 2 {
+                let needs_period = match prev_char {
+                    None => false,
+                    Some(p) => !matches!(p, '.' | '!' | '?' | '…' | ':' | ';'),
+                };
+                if needs_period {
+                    result.push('.');
+                    result.push(' ');
+                } else if consecutive_newlines >= 2 {
+                    result.push(' ');
+                }
+            }
+            result.push(c);
+            prev_char = Some(c);
+            consecutive_newlines = 0;
+        }
+    }
+
+    result
+}
+
+// Попередня обробка діапазонів та віднімання
+fn preprocess_text(text: &str) -> String {
+    let mut result = String::new();
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    
+    while i < chars.len() {
+        if chars[i].is_ascii_digit() {
+            let mut num1_end = i;
+            while num1_end < chars.len() && (chars[num1_end].is_ascii_digit() || chars[num1_end] == '.' || chars[num1_end] == ',') {
+                num1_end += 1;
+            }
+            let num1: String = chars[i..num1_end].iter().collect();
+            
+            if num1_end < chars.len() && chars[num1_end] == '-' {
+                let after_dash = num1_end + 1;
+                if after_dash < chars.len() && chars[after_dash].is_ascii_digit() {
+                    let mut num2_end = after_dash;
+                    while num2_end < chars.len() && (chars[num2_end].is_ascii_digit() || chars[num2_end] == '.' || chars[num2_end] == ',') {
+                        num2_end += 1;
+                    }
+                    let num2: String = chars[after_dash..num2_end].iter().collect();
+                    
+                    let remaining: String = chars[num2_end..].iter().collect();
+                    let remaining_trimmed = remaining.trim_start();
+                    let unit_candidate: String = remaining_trimmed.split_whitespace().next().unwrap_or("").to_lowercase();
+                    
+                    let mut is_range = false;
+                    let unit_chars: Vec<char> = unit_candidate.chars().collect();
+                    let max_len = 10.min(unit_chars.len());
+                    for unit_len in (1..=max_len).rev() {
+                        let candidate: String = unit_chars[..unit_len].iter().collect();
+                        if crate::abbr::UNIT_MAP.contains_key(candidate.as_str()) || candidate.starts_with('°') {
+                            is_range = true;
+                            break;
+                        }
+                    }
+                    
+                    if is_range {
+                        result.push_str("від ");
+                        result.push_str(&num1);
+                        result.push_str(" до ");
+                        result.push_str(&num2);
+                        result.push_str(&remaining);
+                        i = chars.len();
+                        continue;
+                    } else {
+                        result.push_str(&num1);
+                        result.push_str(" мінус ");
+                        result.push_str(&num2);
+                        result.push_str(&chars[num2_end..].iter().collect::<String>());
+                        i = chars.len();
+                        continue;
+                    }
+                }
+            }
+            
+            result.push_str(&num1);
+            i = num1_end;
+        } else {
+            result.push(chars[i]);
+            i += 1;
+        }
+    }
+    
+    result
+}
+
+// ==================== Допоміжні чисельні конвертори ====================
 
 fn int_to_ua(unsigned: &str) -> String {
     if let Ok(n) = unsigned.parse::<f64>() {
@@ -143,312 +315,143 @@ fn num_to_ua(num_str: &str, is_temp: bool) -> String {
     } else { format!("{}{}", sign, unsigned) }
 }
 
-// ==================== КРОК 0: Попередня обробка тексту ====================
+// ==================== КРОК 1: Лексер (Токенізація) ====================
 
-fn step0_fix_paragraphs(text: &str) -> String {
-    let mut result = String::with_capacity(text.len() + 32);
-    let mut prev_char: Option<char> = None;
-    let mut consecutive_newlines = 0;
-
-    for c in text.chars() {
-        if c == '\n' {
-            consecutive_newlines += 1;
-        } else if c == '\r' {
-            // Пропускаємо
-        } else {
-            if consecutive_newlines >= 2 {
-                let needs_period = match prev_char {
-                    None => false,
-                    Some(p) => !matches!(p, '.' | '!' | '?' | '…' | ':' | ';'),
-                };
-                if needs_period {
-                    result.push('.');
-                    result.push(' ');
-                } else if consecutive_newlines >= 2 {
-                    result.push(' ');
-                }
-            }
-            result.push(c);
-            prev_char = Some(c);
-            consecutive_newlines = 0;
-        }
+fn try_parse_time(word: &str) -> Option<RawToken> {
+    if !word.contains(':') {
+        return None;
     }
-
-    result
-}
-
-fn replace_times(text: &str) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    let mut result = String::with_capacity(text.len());
-    let mut i = 0;
-    while i < chars.len() {
-        let is_start_boundary = i == 0 || !chars[i - 1].is_ascii_digit();
-        
-        if is_start_boundary && i + 3 < chars.len() {
-            let mut hours_len = 0;
-            if chars[i].is_ascii_digit() {
-                if chars[i + 1] == ':' {
-                    hours_len = 1;
-                } else if chars[i + 1].is_ascii_digit() && i + 2 < chars.len() && chars[i + 2] == ':' {
-                    hours_len = 2;
-                }
-            }
+    let parts: Vec<&str> = word.split(':').collect();
+    if parts.len() == 2 || parts.len() == 3 {
+        if parts.iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())) {
+            let hours = parts[0];
+            let minutes = parts[1];
+            let seconds = if parts.len() == 3 { Some(parts[2].to_string()) } else { None };
             
-            if hours_len > 0 {
-                let mm_start = i + hours_len + 1;
-                if mm_start + 1 < chars.len() 
-                   && chars[mm_start].is_ascii_digit() 
-                   && chars[mm_start + 1].is_ascii_digit()
-                   && (mm_start + 2 == chars.len() || !chars[mm_start + 2].is_ascii_digit() && chars[mm_start + 2] != ':')
-                {
-                    let hours: String = chars[i..i+hours_len].iter().collect();
-                    let minutes: String = chars[mm_start..mm_start+2].iter().collect();
-                    
-                    let minutes_val = minutes.parse::<i32>().unwrap_or(0);
-                    let minutes_word = if minutes_val == 0 {
-                        "".to_string()
-                    } else if minutes.starts_with('0') {
-                        format!("нуль {}", num_to_ua(&minutes[1..], false))
-                    } else {
-                        num_to_ua(&minutes, false)
-                    };
-                    
-                    let mut time_str = hours;
-                    if !minutes_word.is_empty() {
-                        time_str.push(' ');
-                        time_str.push_str(&minutes_word);
+            if let (Ok(h), Ok(m)) = (hours.parse::<u8>(), minutes.parse::<u8>()) {
+                if h <= 23 && m <= 59 {
+                    if let Some(ref s_str) = seconds {
+                        if let Ok(s) = s_str.parse::<u8>() {
+                            if s > 59 { return None; }
+                        } else { return None; }
                     }
-                    
-                    result.push_str(&time_str);
-                    i = mm_start + 2;
-                    continue;
-                } else if mm_start + 4 < chars.len()
-                   && chars[mm_start].is_ascii_digit() 
-                   && chars[mm_start + 1].is_ascii_digit()
-                   && chars[mm_start + 2] == ':'
-                   && chars[mm_start + 3].is_ascii_digit()
-                   && chars[mm_start + 4].is_ascii_digit()
-                   && (mm_start + 5 == chars.len() || !chars[mm_start + 5].is_ascii_digit())
-                {
-                    let hours: String = chars[i..i+hours_len].iter().collect();
-                    let minutes: String = chars[mm_start..mm_start+2].iter().collect();
-                    let seconds: String = chars[mm_start+3..mm_start+5].iter().collect();
-                    
-                    let minutes_val = minutes.parse::<i32>().unwrap_or(0);
-                    let minutes_word = if minutes_val == 0 {
-                        "".to_string()
-                    } else if minutes.starts_with('0') {
-                        format!("нуль {}", num_to_ua(&minutes[1..], false))
-                    } else {
-                        num_to_ua(&minutes, false)
-                    };
-                    
-                    let seconds_val = seconds.parse::<i32>().unwrap_or(0);
-                    let seconds_word = if seconds_val == 0 {
-                        "".to_string()
-                    } else if seconds.starts_with('0') {
-                        format!("нуль {}", num_to_ua(&seconds[1..], false))
-                    } else {
-                        num_to_ua(&seconds, false)
-                    };
-                    
-                    let mut time_str = hours;
-                    if !minutes_word.is_empty() {
-                        time_str.push(' ');
-                        time_str.push_str(&minutes_word);
-                    }
-                    if !seconds_word.is_empty() {
-                        time_str.push(' ');
-                        time_str.push_str(&seconds_word);
-                    }
-                    
-                    result.push_str(&time_str);
-                    i = mm_start + 5;
-                    continue;
+                    return Some(RawToken::Time {
+                        hours: hours.to_string(),
+                        minutes: minutes.to_string(),
+                        seconds,
+                    });
                 }
             }
         }
-        
-        result.push(chars[i]);
-        i += 1;
-    }
-    result
-}
-
-fn replace_dates(text: &str) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    let mut result = String::with_capacity(text.len());
-    let mut i = 0;
-    while i < chars.len() {
-        let is_start_boundary = i == 0 || !chars[i - 1].is_ascii_digit();
-        
-        if is_start_boundary && i + 3 < chars.len() {
-            let mut dd_len = 0;
-            if chars[i].is_ascii_digit() {
-                if chars[i+1] == '.' {
-                    dd_len = 1;
-                } else if chars[i+1].is_ascii_digit() && i + 2 < chars.len() && chars[i+2] == '.' {
-                    dd_len = 2;
-                }
-            }
-            
-            if dd_len > 0 {
-                let mm_start = i + dd_len + 1;
-                if mm_start + 1 < chars.len() 
-                   && chars[mm_start].is_ascii_digit() 
-                   && chars[mm_start + 1].is_ascii_digit()
-                {
-                    let mut yyyy_len = 0;
-                    if mm_start + 6 < chars.len() 
-                       && chars[mm_start + 2] == '.' 
-                       && chars[mm_start + 3].is_ascii_digit()
-                       && chars[mm_start + 4].is_ascii_digit()
-                       && chars[mm_start + 5].is_ascii_digit()
-                       && chars[mm_start + 6].is_ascii_digit()
-                       && (mm_start + 7 == chars.len() || !chars[mm_start + 7].is_ascii_digit())
-                    {
-                        yyyy_len = 4;
-                    }
-                    
-                    let is_valid_date_end = yyyy_len == 4 || (mm_start + 2 == chars.len() || !chars[mm_start + 2].is_ascii_digit() && chars[mm_start + 2] != '.');
-                    
-                    if is_valid_date_end {
-                        let dd_str: String = chars[i..i+dd_len].iter().collect();
-                        let mm_str: String = chars[mm_start..mm_start+2].iter().collect();
-                        let dd = dd_str.parse::<i32>().unwrap_or(0);
-                        let mm = mm_str.parse::<i32>().unwrap_or(0);
-                        
-                        if dd >= 1 && dd <= 31 && mm >= 1 && mm <= 12 {
-                            let month_name = match mm {
-                                1 => "січня", 2 => "лютого", 3 => "березня", 4 => "квітня",
-                                5 => "травня", 6 => "червня", 7 => "липня", 8 => "серпня",
-                                9 => "вересня", 10 => "жовтня", 11 => "листопада", 12 => "грудня",
-                                _ => "січня"
-                             };
-                             
-                             let last_word = result.split_whitespace().last().unwrap_or("").to_lowercase();
-                             let suffix = if matches!(last_word.as_str(), "до" | "з" | "від" | "після" | "для" | "коло" | "проти" | "біля") {
-                                 "-го"
-                             } else if matches!(last_word.as_str(), "на" | "о" | "об" | "при") {
-                                 "-му"
-                             } else {
-                                 "-е"
-                             };
-                             
-                             let mut date_expanded = format!("{}{}", dd_str, suffix);
-                             date_expanded.push(' ');
-                             date_expanded.push_str(month_name);
-                             
-                             if yyyy_len == 4 {
-                                 let yyyy_str: String = chars[mm_start+3..mm_start+7].iter().collect();
-                                 date_expanded.push_str(" ");
-                                 date_expanded.push_str(&yyyy_str);
-                                 date_expanded.push_str("-го року");
-                             }
-                             
-                             result.push_str(&date_expanded);
-                             i = mm_start + 2 + if yyyy_len == 4 { 5 } else { 0 };
-                             continue;
-                        }
-                    }
-                }
-            }
-        }
-        
-        result.push(chars[i]);
-        i += 1;
-    }
-    result
-}
-
-fn preprocess_text(text: &str) -> String {
-    let with_times = replace_times(text);
-    let with_dates = replace_dates(&with_times);
-    
-    let mut result = String::new();
-    let chars: Vec<char> = with_dates.chars().collect();
-    let mut i = 0;
-    
-    while i < chars.len() {
-        if chars[i].is_ascii_digit() {
-            let mut num1_end = i;
-            while num1_end < chars.len() && (chars[num1_end].is_ascii_digit() || chars[num1_end] == '.' || chars[num1_end] == ',') {
-                num1_end += 1;
-            }
-            let num1: String = chars[i..num1_end].iter().collect();
-            
-            if num1_end < chars.len() && chars[num1_end] == '-' {
-                let after_dash = num1_end + 1;
-                if after_dash < chars.len() && chars[after_dash].is_ascii_digit() {
-                    let mut num2_end = after_dash;
-                    while num2_end < chars.len() && (chars[num2_end].is_ascii_digit() || chars[num2_end] == '.' || chars[num2_end] == ',') {
-                        num2_end += 1;
-                    }
-                    let num2: String = chars[after_dash..num2_end].iter().collect();
-                    
-                    let remaining: String = chars[num2_end..].iter().collect();
-                    let remaining_trimmed = remaining.trim_start();
-                    let unit_candidate: String = remaining_trimmed.split_whitespace().next().unwrap_or("").to_lowercase();
-                    
-                    let mut is_range = false;
-                    let unit_chars: Vec<char> = unit_candidate.chars().collect();
-                    let max_len = 10.min(unit_chars.len());
-                    for unit_len in (1..=max_len).rev() {
-                        let candidate: String = unit_chars[..unit_len].iter().collect();
-                        if crate::abbr::UNIT_MAP.contains_key(candidate.as_str()) || candidate.starts_with('°') {
-                            is_range = true;
-                            break;
-                        }
-                    }
-                    
-                    if is_range {
-                        result.push_str("від ");
-                        result.push_str(&num1);
-                        result.push_str(" до ");
-                        result.push_str(&num2);
-                        result.push_str(&remaining);
-                        i = chars.len();
-                        continue;
-                    } else {
-                        result.push_str(&num1);
-                        result.push_str(" мінус ");
-                        result.push_str(&num2);
-                        result.push_str(&chars[num2_end..].iter().collect::<String>());
-                        i = chars.len();
-                        continue;
-                    }
-                }
-            }
-            
-            result.push_str(&num1);
-            i = num1_end;
-        } else {
-            result.push(chars[i]);
-            i += 1;
-        }
-    }
-    
-    result
-}
-
-fn split_number_unit(word: &str) -> Option<(String, String)> {
-    let chars: Vec<char> = word.chars().collect();
-    let mut num_end = 0;
-    for (i, c) in chars.iter().enumerate() {
-        if c.is_ascii_digit() || (*c == '.' || *c == ',') { num_end = i + 1; } else { break; }
-    }
-    if num_end > 0 && num_end < chars.len() {
-        let num: String = chars[..num_end].iter().collect();
-        let unit: String = chars[num_end..].iter().collect();
-        if unit.starts_with('-') {
-            return None;
-        }
-        if num.parse::<f64>().is_ok() { return Some((num, unit)); }
     }
     None
 }
 
-/// Розділяє слово на префікс із розділових знаків, ядро та суфікс із розділових знаків.
+fn try_parse_date(word: &str) -> Option<RawToken> {
+    if !word.contains('.') {
+        return None;
+    }
+    let parts: Vec<&str> = word.split('.').collect();
+    if parts.len() == 2 || parts.len() == 3 {
+        if parts.iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())) {
+            let day_str = parts[0];
+            let month_str = parts[1];
+            let year_str = if parts.len() == 3 { Some(parts[2]) } else { None };
+            
+            if let (Ok(d), Ok(m)) = (day_str.parse::<u8>(), month_str.parse::<u8>()) {
+                if d >= 1 && d <= 31 && m >= 1 && m <= 12 && month_str.len() == 2 {
+                    if let Some(y_str) = year_str {
+                        if y_str.len() != 4 || y_str.parse::<u16>().is_err() {
+                            return None;
+                        }
+                    }
+                    return Some(RawToken::Date {
+                        day: day_str.to_string(),
+                        month: month_str.to_string(),
+                        year: year_str.map(|s| s.to_string()),
+                    });
+                }
+            }
+        }
+    }
+    None
+}
+
+fn try_parse_number(word: &str) -> Option<RawToken> {
+    let chars: Vec<char> = word.chars().collect();
+    if chars.is_empty() { return None; }
+    
+    let mut idx = 0;
+    let mut is_negative = false;
+    if chars[idx] == '-' {
+        is_negative = true;
+        idx += 1;
+    }
+    
+    let mut int_part = String::new();
+    while idx < chars.len() && chars[idx].is_ascii_digit() {
+        int_part.push(chars[idx]);
+        idx += 1;
+    }
+    
+    if int_part.is_empty() {
+        return None;
+    }
+    
+    let mut dec_part = None;
+    if idx < chars.len() && (chars[idx] == '.' || chars[idx] == ',') {
+        if idx + 1 < chars.len() && chars[idx + 1].is_ascii_digit() {
+            idx += 1;
+            let mut dp = String::new();
+            while idx < chars.len() && chars[idx].is_ascii_digit() {
+                dp.push(chars[idx]);
+                idx += 1;
+            }
+            dec_part = Some(dp);
+        }
+    }
+    
+    let suffix = if idx < chars.len() {
+        Some(chars[idx..].iter().collect::<String>())
+    } else {
+        None
+    };
+    
+    // ordinal suffixes should not be split as separate units
+    if let Some(ref s) = suffix {
+        if s.starts_with('-') {
+            return Some(RawToken::Number {
+                raw: word.to_string(),
+                is_negative,
+                int_part,
+                dec_part,
+                suffix: suffix.clone(),
+            });
+        }
+    }
+    
+    Some(RawToken::Number {
+        raw: word.to_string(),
+        is_negative,
+        int_part,
+        dec_part,
+        suffix,
+    })
+}
+
+fn parse_word_token(word: &str) -> RawToken {
+    if let Some(t) = try_parse_time(word) {
+        return t;
+    }
+    if let Some(d) = try_parse_date(word) {
+        return d;
+    }
+    if let Some(n) = try_parse_number(word) {
+        return n;
+    }
+    RawToken::Word(word.to_string())
+}
+
 fn split_punctuation(word: &str) -> (String, String, String) {
     let chars: Vec<char> = word.chars().collect();
     if chars.is_empty() {
@@ -479,16 +482,445 @@ fn split_punctuation(word: &str) -> (String, String, String) {
     (prefix, core, suffix)
 }
 
-fn is_number_word(word: &str) -> bool {
-    matches!(word.to_lowercase().as_str(),
-        "нуль" | "один" | "одна" | "одне" | "два" | "дві" | "три" | "чотири" | "п'ять" | "пʼять" |
-        "шість" | "сім" | "вісім" | "дев'ять" | "девʼять" | "десять" | "одинадцять" | "дванадцять" |
-        "тринадцять" | "чотирнадцять" | "п'ятнадцять" | "пʼятнадцять" | "шістнадцять" | "сімнадцять" |
-        "вісімнадцять" | "дев'ятнадцять" | "девʼятнадцять" | "двадцять" | "тридцяти" | "тридцять" |
-        "сорок" | "п'ятдесят" | "пʼятдесят" | "шістдесят" | "сімдесят" | "вісімдесят" | "дев'яносто" | "девʼяносто" |
-        "сто" | "двісті" | "триста" | "чотириста" | "п'ятсот" | "пʼятсот" | "шістсот" | "сімсот" | "вісімсот" | "дев'ятсот" | "девʼятсот" |
-        "тисяча" | "тисячі" | "тисяч" | "мільйон" | "мільйони" | "мільйонів" | "мільярд" | "мільярди" | "мільярдів"
-    )
+fn tokenize_word(word: &str) -> Vec<RawToken> {
+    let (prefix, core, suffix) = split_punctuation(word);
+    let mut result = Vec::new();
+    
+    for c in prefix.chars() {
+        result.push(RawToken::Punctuation(c));
+    }
+    
+    if !core.is_empty() {
+        result.push(parse_word_token(&core));
+    }
+    
+    for c in suffix.chars() {
+        result.push(RawToken::Punctuation(c));
+    }
+    
+    result
+}
+
+fn tokenize(text: &str) -> Vec<RawToken> {
+    let mut tokens = Vec::new();
+    let mut current_word = String::new();
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    
+    while i < chars.len() {
+        if chars[i].is_whitespace() {
+            if !current_word.is_empty() {
+                tokens.extend(tokenize_word(&current_word));
+                current_word.clear();
+            }
+            let mut ws = String::new();
+            while i < chars.len() && chars[i].is_whitespace() {
+                ws.push(chars[i]);
+                i += 1;
+            }
+            tokens.push(RawToken::Whitespace(ws));
+        } else {
+            current_word.push(chars[i]);
+            i += 1;
+        }
+    }
+    if !current_word.is_empty() {
+        tokens.extend(tokenize_word(&current_word));
+    }
+    tokens
+}
+
+// ==================== КРОК 2: Контекстний парсер ====================
+
+fn parse_context(raw_tokens: Vec<RawToken>) -> Vec<Token> {
+    let mut temp_tokens = Vec::new();
+    for rt in raw_tokens {
+        match rt {
+            RawToken::Whitespace(ws) => temp_tokens.push(Token::Whitespace(ws)),
+            RawToken::Punctuation(c) => temp_tokens.push(Token::Punctuation(c)),
+            RawToken::Word(w) => {
+                let lower = w.to_lowercase();
+                let is_abbr = is_abbreviation(&w) || ABBR_MAP.contains_key(lower.as_str());
+                temp_tokens.push(Token::Word { text: w, is_abbr });
+            }
+            RawToken::Time { hours, minutes, seconds, .. } => {
+                let h_val = hours.parse::<u8>().unwrap_or(0);
+                let m_val = minutes.parse::<u8>().unwrap_or(0);
+                let s_val = seconds.map(|s| s.parse::<u8>().unwrap_or(0));
+                temp_tokens.push(Token::Time {
+                    hours: h_val,
+                    minutes: m_val,
+                    seconds: s_val,
+                    preposition: None,
+                });
+            }
+            RawToken::Date { day, month, year, .. } => {
+                let d_val = day.parse::<u8>().unwrap_or(0);
+                let m_val = month.parse::<u8>().unwrap_or(0);
+                let y_val = year.map(|y| y.parse::<u16>().unwrap_or(0));
+                temp_tokens.push(Token::Date {
+                    day: d_val,
+                    month: m_val,
+                    year: y_val,
+                    preposition: None,
+                });
+            }
+            RawToken::Number { raw, is_negative, int_part, dec_part, suffix } => {
+                let val = match &dec_part {
+                    None => NumberValue::Integer(int_part.parse::<i64>().unwrap_or(0)),
+                    Some(dp) => NumberValue::Decimal {
+                        int_part: int_part.parse::<i64>().unwrap_or(0),
+                        dec_part: dp.parse::<u32>().unwrap_or(0),
+                        dec_places: dp.len(),
+                    },
+                };
+                temp_tokens.push(Token::Number {
+                    raw,
+                    is_negative,
+                    value: val,
+                    suffix,
+                    unit: None,
+                    context_noun: None,
+                    preposition: None,
+                    governed_by_decimal: false,
+                    gender: Gender::Masculine,
+                });
+            }
+        }
+    }
+    
+    let mut tokens = Vec::new();
+    let mut idx = 0;
+    while idx < temp_tokens.len() {
+        let mut current = temp_tokens[idx].clone();
+        
+        match &mut current {
+            Token::Time { preposition, .. } => {
+                if let Some(prep) = find_preceding_word(&temp_tokens, idx) {
+                    let p_lower = prep.to_lowercase();
+                    if p_lower == "о" || p_lower == "об" {
+                        *preposition = Some(prep);
+                    }
+                }
+            }
+            Token::Date { preposition, .. } => {
+                if let Some(prep) = find_preceding_word(&temp_tokens, idx) {
+                    *preposition = Some(prep);
+                }
+            }
+            Token::Number { preposition, context_noun, gender, governed_by_decimal, unit, suffix, value, .. } => {
+                if let Some(prep) = find_preceding_word(&temp_tokens, idx) {
+                    if is_preposition(&prep) {
+                        *preposition = Some(prep);
+                    }
+                }
+                
+                let mut resolved_unit = None;
+                let mut resolved_ctx_noun = None;
+                
+                if let Some(suf) = suffix {
+                    let lower_suf = suf.to_lowercase();
+                    if let Some((_, u)) = find_unit(&lower_suf) {
+                        resolved_unit = Some(u.to_string());
+                        resolved_ctx_noun = get_context_noun(&lower_suf).map(|s| s.to_string());
+                    }
+                }
+                
+                if resolved_unit.is_none() {
+                    if let Some((next_word_idx, next_word)) = find_following_word(&temp_tokens, idx) {
+                        let lower_next = next_word.to_lowercase();
+                        if let Some((end, u)) = find_unit(&lower_next) {
+                            if end == lower_next.chars().count() {
+                                resolved_unit = Some(u.to_string());
+                                resolved_ctx_noun = get_context_noun(&lower_next).map(|s| s.to_string());
+                                temp_tokens[next_word_idx] = Token::Whitespace(String::new());
+                            }
+                        }
+                    }
+                }
+                
+                if resolved_ctx_noun.is_none() {
+                    if let Some((_, next_word)) = find_following_word(&temp_tokens, idx) {
+                        let lower_next = next_word.to_lowercase();
+                        if let Some(mapped) = get_context_noun(&lower_next) {
+                            resolved_ctx_noun = Some(mapped.to_string());
+                        } else if !is_preposition(&next_word) 
+                            && !next_word.chars().any(|c| c.is_ascii_digit())
+                            && next_word.chars().all(|c| c.is_alphanumeric()) 
+                        {
+                            resolved_ctx_noun = Some(next_word.clone());
+                        }
+                    }
+                }
+                
+                *unit = resolved_unit;
+                *context_noun = resolved_ctx_noun;
+                
+                let is_simplified_temp = match value {
+                    NumberValue::Decimal { int_part, dec_places, .. } => {
+                        let is_temp_unit = unit.as_ref().map(|u| u.starts_with("градус") || u.starts_with("кельвін")).unwrap_or(false);
+                        is_temp_unit && *int_part > 9 && *dec_places == 1
+                    }
+                    _ => false,
+                };
+                
+                match value {
+                    NumberValue::Decimal { .. } => {
+                        *governed_by_decimal = !is_simplified_temp;
+                        *gender = if is_simplified_temp { Gender::Masculine } else { Gender::Feminine };
+                    }
+                    NumberValue::Integer(_) => {
+                        *governed_by_decimal = false;
+                        if let Some(suf) = suffix {
+                            if suf.ends_with('а') || suf.ends_with('я') {
+                                *gender = Gender::Feminine;
+                            } else if suf.ends_with('е') || suf.ends_with('є') {
+                                *gender = Gender::Neuter;
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        
+        tokens.push(current);
+        idx += 1;
+    }
+    
+    tokens.into_iter().filter(|t| {
+        if let Token::Whitespace(ws) = t {
+            !ws.is_empty()
+        } else {
+            true
+        }
+    }).collect()
+}
+
+fn find_preceding_word(tokens: &[Token], start_idx: usize) -> Option<String> {
+    let mut i = start_idx;
+    while i > 0 {
+        i -= 1;
+        match &tokens[i] {
+            Token::Word { text, .. } => return Some(text.clone()),
+            Token::Punctuation(_) | Token::Whitespace(_) => {}
+            _ => break,
+        }
+    }
+    None
+}
+
+fn find_following_word(tokens: &[Token], start_idx: usize) -> Option<(usize, String)> {
+    let mut i = start_idx + 1;
+    while i < tokens.len() {
+        match &tokens[i] {
+            Token::Word { text, .. } => return Some((i, text.clone())),
+            Token::Punctuation(_) | Token::Whitespace(_) => {}
+            _ => break,
+        }
+        i += 1;
+    }
+    None
+}
+
+// ==================== КРОК 3: Генератор тексту ====================
+
+fn generate_text(tokens: Vec<Token>) -> String {
+    let mut result = Vec::new();
+    let mut i = 0;
+    
+    while i < tokens.len() {
+        match &tokens[i] {
+            Token::Whitespace(ws) => {
+                result.push(ws.clone());
+            }
+            Token::Punctuation(c) => {
+                result.push(c.to_string());
+            }
+            Token::Word { text, is_abbr } => {
+                let lower = text.to_lowercase();
+                if let Some((end, u)) = find_unit(&lower) {
+                    if end == lower.chars().count() {
+                        result.push(apply_stress(u));
+                        i += 1;
+                        continue;
+                    }
+                }
+                if *is_abbr {
+                    if ABBR_MAP.contains_key(lower.as_str()) {
+                        let (prev_core, before_prev) = find_preceding_words(&tokens, i);
+                        let expanded = expand_abbr_contextual(text, prev_core.as_deref(), before_prev.as_deref());
+                        let stressed_parts: Vec<String> = expanded.split_whitespace()
+                            .map(|w| apply_stress(w))
+                            .collect();
+                        result.push(stressed_parts.join(" "));
+                    } else if let Some(stressed) = STRESS_DICT.get(&lower) {
+                        result.push(stressed.clone());
+                    } else {
+                        let expanded = expand_abbreviation(text);
+                        let stressed_parts: Vec<String> = expanded.split_whitespace()
+                            .map(|w| apply_stress(w))
+                            .collect();
+                        result.push(stressed_parts.join(" "));
+                    }
+                } else {
+                    result.push(apply_stress(text));
+                }
+            }
+            Token::Time { hours, minutes, seconds, preposition } => {
+                let mut time_parts = Vec::new();
+                
+                let prep_str = preposition.as_deref();
+                let hours_word = if let Some(p) = prep_str {
+                    let p_lower = p.to_lowercase();
+                    if p_lower == "о" || p_lower == "об" {
+                        UkContext::analyze(Some(p), &hours.to_string(), Some("годині"))
+                            .unwrap_or_else(|_| num_to_ua(&hours.to_string(), false))
+                    } else {
+                        num_to_ua(&hours.to_string(), false)
+                    }
+                } else {
+                    num_to_ua(&hours.to_string(), false)
+                };
+                time_parts.push(hours_word.replace('ʼ', "'"));
+                
+                let m_val = *minutes;
+                if m_val > 0 {
+                    let min_word = if m_val < 10 {
+                        format!("нуль {}", num_to_ua(&m_val.to_string(), false))
+                    } else {
+                        num_to_ua(&m_val.to_string(), false)
+                    };
+                    time_parts.push(min_word);
+                }
+                
+                if let Some(s_val) = seconds {
+                    if *s_val > 0 {
+                        let sec_word = if *s_val < 10 {
+                            format!("нуль {}", num_to_ua(&s_val.to_string(), false))
+                        } else {
+                            num_to_ua(&s_val.to_string(), false)
+                        };
+                        time_parts.push(sec_word);
+                    }
+                }
+                
+                result.push(time_parts.join(" "));
+            }
+            Token::Date { day, month, year, preposition } => {
+                let mut date_parts = Vec::new();
+                
+                let month_name = match month {
+                    1 => "січня", 2 => "лютого", 3 => "березня", 4 => "квітня",
+                    5 => "травня", 6 => "червня", 7 => "липня", 8 => "серпня",
+                    9 => "вересня", 10 => "жовтня", 11 => "листопада", 12 => "грудня",
+                    _ => "січня"
+                };
+                
+                let suffix = if let Some(p) = preposition {
+                    let p_lower = p.to_lowercase();
+                    if matches!(p_lower.as_str(), "до" | "з" | "від" | "після" | "для" | "коло" | "проти" | "біля") {
+                        "-го"
+                    } else if matches!(p_lower.as_str(), "на" | "о" | "об" | "при") {
+                        "-му"
+                    } else {
+                        "-е"
+                    }
+                } else {
+                    "-е"
+                };
+                
+                let day_query = format!("{}{}", day, suffix);
+                let day_word = UkContext::analyze(preposition.as_deref(), &day_query, Some(month_name))
+                    .unwrap_or_else(|_| num_to_ua(&day.to_string(), false));
+                date_parts.push(day_word.replace('ʼ', "'"));
+                date_parts.push(month_name.to_string());
+                
+                if let Some(y) = year {
+                    let year_query = format!("{}-го", y);
+                    let year_word = UkContext::analyze(None, &year_query, Some("року"))
+                        .unwrap_or_else(|_| num_to_ua(&y.to_string(), false));
+                    date_parts.push(format!("{} року", year_word.replace('ʼ', "'")));
+                }
+                
+                result.push(date_parts.join(" "));
+            }
+            Token::Number { is_negative, value, suffix, unit, context_noun, preposition, governed_by_decimal, gender: _gender, .. } => {
+                let sign = if *is_negative { "мінус " } else { "" };
+                let mut num_word = match value {
+                    NumberValue::Integer(val) => {
+                        let is_ordinal = suffix.as_ref().map(|s| s.starts_with('-')).unwrap_or(false);
+                        if is_ordinal {
+                            let query = format!("{}{}", val, suffix.as_ref().unwrap());
+                            UkContext::analyze(None, &query, None)
+                                .unwrap_or_else(|_| num_to_ua(&val.to_string(), false))
+                        } else {
+                            if let Some(ctx) = context_noun {
+                                UkContext::analyze(preposition.as_deref(), &val.to_string(), Some(ctx))
+                                    .unwrap_or_else(|_| num_to_ua(&val.to_string(), false))
+                            } else {
+                                UkContext::analyze(preposition.as_deref(), &val.to_string(), None)
+                                    .unwrap_or_else(|_| num_to_ua(&val.to_string(), false))
+                            }
+                        }
+                    }
+                    NumberValue::Decimal { int_part, dec_part, .. } => {
+                        let is_temp = unit.as_ref().map(|u| u.starts_with("градус") || u.starts_with("кельвін")).unwrap_or(false);
+                        decimal_to_ua(&int_part.to_string(), &dec_part.to_string(), is_temp)
+                    }
+                };
+                
+                num_word = num_word.replace('ʼ', "'");
+                let mut output = format!("{}{}", sign, num_word);
+                
+                if let Some(u) = unit {
+                    let prev_word = find_preceding_words(&tokens, i).0;
+                    let unit_form = if *governed_by_decimal {
+                        get_unit_form("десятих", u, prev_word.as_deref())
+                    } else {
+                        get_unit_form(&output, u, prev_word.as_deref())
+                    };
+                    output.push(' ');
+                    output.push_str(&with_stress_units(&unit_form));
+                }
+                
+                result.push(output);
+            }
+        }
+        i += 1;
+    }
+    
+    result.join("")
+}
+
+fn find_preceding_words(tokens: &[Token], start_idx: usize) -> (Option<String>, Option<String>) {
+    let mut first = None;
+    let mut second = None;
+    let mut i = start_idx;
+    while i > 0 {
+        i -= 1;
+        match &tokens[i] {
+            Token::Word { text, .. } => {
+                if first.is_none() {
+                    first = Some(text.clone());
+                } else {
+                    second = Some(text.clone());
+                    break;
+                }
+            }
+            Token::Number { raw, .. } => {
+                if first.is_none() {
+                    first = Some(raw.clone());
+                } else {
+                    second = Some(raw.clone());
+                    break;
+                }
+            }
+            Token::Punctuation(_) | Token::Whitespace(_) => {}
+            _ => break,
+        }
+    }
+    (first, second)
 }
 
 // ==================== Публічний API ====================
@@ -497,141 +929,11 @@ fn is_number_word(word: &str) -> bool {
 pub fn normalize_text(text: &str) -> String {
     let prepared = step0_fix_paragraphs(text);
     let preprocessed = preprocess_text(&prepared);
-
-    let raw_words: Vec<&str> = preprocessed.split_whitespace().collect();
-    let mut result = Vec::new();
-    let mut i = 0;
+    let raw_tokens = tokenize(&preprocessed);
+    let resolved_tokens = parse_context(raw_tokens);
+    let generated = generate_text(resolved_tokens);
     
-    let split_words: Vec<(String, String, String)> = raw_words.iter()
-        .map(|w| split_punctuation(w))
-        .collect();
-    
-    while i < split_words.len() {
-        let (prefix, core, suffix) = &split_words[i];
-        
-        if core.is_empty() {
-            result.push(prefix.clone() + suffix);
-            i += 1;
-            continue;
-        }
-
-        let prev_core = if i > 0 { Some(split_words[i - 1].1.as_str()) } else { None };
-        let next_core = if i + 1 < split_words.len() { Some(split_words[i + 1].1.as_str()) } else { None };
-
-        let mut word_result = String::new();
-
-        // Розділення числа та одиниці типу "220V"
-        if let Some((num_str, unit)) = split_number_unit(core) {
-            let mapped_unit = get_context_noun(&unit).unwrap_or("поверхів");
-            let is_temp = unit.starts_with('°') || unit.to_lowercase().starts_with("град");
-            let num_word = UkContext::analyze(prev_core, &num_str, Some(mapped_unit))
-                .unwrap_or_else(|_| num_to_ua(&num_str, is_temp));
-            word_result.push_str(&num_word);
-            word_result.push(' ');
-            
-            if let Some((end, u)) = find_unit(&unit.to_lowercase()) {
-                if end == unit.chars().count() {
-                    let declined = get_unit_form(&num_word, u, prev_core);
-                    word_result.push_str(&with_stress_units(&declined));
-                }
-            }
-            result.push(format!("{}{}{}", prefix, word_result.trim(), suffix));
-            i += 1;
-            continue;
-        }
-
-        // Число з контекстом
-        let mapped_next = if prev_core.map(|p| p.to_lowercase()).as_deref() == Some("о") 
-            || prev_core.map(|p| p.to_lowercase()).as_deref() == Some("об") 
-        {
-            Some("годині")
-        } else if let Some(n) = next_core {
-            if let Some(mapped) = get_context_noun(n) {
-                Some(mapped)
-            } else if is_preposition(n) 
-                || is_number_word(n)
-                || n.chars().any(|c| c.is_ascii_digit())
-                || n.chars().all(|c| !c.is_alphanumeric()) 
-            {
-                None
-            } else {
-                Some(n)
-            }
-        } else {
-            None
-        };
-
-        if let Ok(num_word) = UkContext::analyze(prev_core, core, mapped_next) {
-            let processed = num_word.replace('ʼ', "'");
-            result.push(format!("{}{}{}", prefix, processed, suffix));
-            i += 1;
-            continue;
-        }
-        
-        // Десяткові числа
-        if core.contains('.') || core.contains(',') {
-            let is_temp = next_core.map(|n| n.starts_with('°') || n.to_lowercase().starts_with("град")).unwrap_or(false);
-            if core.parse::<f64>().is_ok() {
-                let processed = num_to_ua(core, is_temp);
-                result.push(format!("{}{}{}", prefix, processed, suffix));
-                i += 1;
-                continue;
-            }
-        }
-
-        // Звичайне слово / одиниця виміру / абревіатура
-        let lower = core.to_lowercase();
-        let mut processed_as_unit = false;
-        if let Some((end, u)) = find_unit(&lower) {
-            if end == lower.chars().count() {
-                let unit_form = if let Some(p) = prev_core {
-                    if p.parse::<f64>().is_ok() {
-                        let last_item = result.last().cloned().unwrap_or_default();
-                        let last_word_clean: String = last_item.split_whitespace().last().unwrap_or("")
-                            .chars().filter(|c| !matches!(*c, '.' | ',' | '!' | '?' | ':' | ';')).collect();
-                        get_unit_form(&last_word_clean, u, if i > 1 { Some(split_words[i - 2].1.as_str()) } else { None })
-                    } else {
-                        u.to_string()
-                    }
-                } else {
-                    u.to_string()
-                };
-                result.push(format!("{}{}{}", prefix, with_stress_units(&unit_form), suffix));
-                processed_as_unit = true;
-            }
-        }
-
-        if !processed_as_unit {
-            let is_abbr = is_abbreviation(core) || ABBR_MAP.contains_key(lower.as_str());
-            if is_abbr {
-                let lower_word = core.to_lowercase();
-                if ABBR_MAP.contains_key(lower_word.as_str()) {
-                    let before_prev = if i > 1 { Some(split_words[i - 2].1.as_str()) } else { None };
-                    let expanded = expand_abbr_contextual(core, prev_core, before_prev);
-                    let stressed_parts: Vec<String> = expanded.split_whitespace()
-                        .map(|w| apply_stress(w))
-                        .collect();
-                    result.push(format!("{}{}{}", prefix, stressed_parts.join(" "), suffix));
-                } else if let Some(stressed) = STRESS_DICT.get(&lower_word) {
-                    result.push(format!("{}{}{}", prefix, stressed.clone(), suffix));
-                } else {
-                    let expanded = expand_abbreviation(core);
-                    let stressed_parts: Vec<String> = expanded.split_whitespace()
-                        .map(|w| apply_stress(w))
-                        .collect();
-                    result.push(format!("{}{}{}", prefix, stressed_parts.join(" "), suffix));
-                }
-            } else {
-                result.push(format!("{}{}{}", prefix, apply_stress(core), suffix));
-            }
-        }
-        i += 1;
-    }
-
-    result.join(" ")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    generated.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 // ==================== Тести ====================
@@ -717,35 +1019,29 @@ mod tests {
 
     #[test]
     fn test_declension_of_units_contextual() {
-        // "з 5 кг" -> "з п'яти кілограмів"
         let r1 = normalize_text("з 5 кг");
         println!("test_declension_of_units_contextual r1: {:?}", r1);
         assert!(has_text(&r1, "п'яти"));
         assert!(has_text(&r1, "кілограмів"));
 
-        // "з 1 кг" -> "з одного кілограма"
         let r2 = normalize_text("з 1 кг");
         println!("test_declension_of_units_contextual r2: {:?}", r2);
         assert!(has_text(&r2, "одного"));
         assert!(has_text(&r2, "грама"));
 
-        // "при 1 градусі" -> "при одному градусі"
         let r3 = normalize_text("при 1°");
         println!("test_declension_of_units_contextual r3: {:?}", r3);
         assert!(has_text(&r3, "одному"));
         assert!(has_text(&r3, "градусі"));
 
-        // "температура котла 40°" -> "сорок градусів"
         let r4 = normalize_text("температура котла 40°");
         println!("test_declension_of_units_contextual r4: {:?}", r4);
         assert!(has_text(&r4, "сорок градусів"));
 
-        // "температура котла 41°" -> "сорок один градус"
         let r5 = normalize_text("температура котла 41°");
         println!("test_declension_of_units_contextual r5: {:?}", r5);
         assert!(has_text(&r5, "сорок один градус"));
 
-        // "ми витратили 2 з 5 кг" -> "два з п'яти кілограмів"
         let r6 = normalize_text("ми витратили 2 з 5 кг");
         println!("test_declension_of_units_contextual r6: {:?}", r6);
         assert!(has_text(&r6, "два з п'яти кілограмів"));
@@ -753,7 +1049,6 @@ mod tests {
 
     #[test]
     fn test_new_abbreviations_contextual() {
-        // Тест для нових доданих абревіатур
         let r1 = normalize_text("передано для ЗСУ");
         println!("test_new_abbreviations_contextual r1: {:?}", r1);
         assert!(has_text(&r1, "передано для збройних сил україни"));
