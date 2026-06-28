@@ -86,6 +86,44 @@ pub fn parse_context(raw_tokens: Vec<RawToken>) -> Vec<Token> {
                     }
                 }
                 
+                // 1. Resolve multiplier if attached as suffix (e.g. 1.5к, 1.5k)
+                let mut multiplier_found = false;
+                if let Some(suf) = suffix {
+                    let lower_suf = suf.to_lowercase();
+                    let clean_suf = lower_suf.trim_end_matches('.');
+                    if clean_suf == "к" || clean_suf == "k" {
+                        multiplier_found = true;
+                        *value = match value {
+                            NumberValue::Integer(val) => NumberValue::Integer(*val * 1000),
+                            NumberValue::Decimal { int_part, dec_part, dec_places } => {
+                                let multiplier = 10u64.pow(*dec_places as u32);
+                                let total_val = (*int_part as u64 * multiplier + *dec_part as u64) * 1000 / multiplier;
+                                NumberValue::Integer(total_val as i64)
+                            }
+                        };
+                        *suffix = None;
+                    }
+                }
+                
+                // 2. Resolve multiplier if separated by space (e.g. 1.5 к, 1.5 k)
+                if !multiplier_found {
+                    if let Some((next_word_idx, next_word)) = find_following_word(&temp_tokens, idx) {
+                        let lower_next = next_word.to_lowercase();
+                        let clean_next = lower_next.trim_end_matches('.');
+                        if clean_next == "к" || clean_next == "k" {
+                            *value = match value {
+                                NumberValue::Integer(val) => NumberValue::Integer(*val * 1000),
+                                NumberValue::Decimal { int_part, dec_part, dec_places } => {
+                                    let multiplier = 10u64.pow(*dec_places as u32);
+                                    let total_val = (*int_part as u64 * multiplier + *dec_part as u64) * 1000 / multiplier;
+                                    NumberValue::Integer(total_val as i64)
+                                }
+                            };
+                            temp_tokens[next_word_idx] = Token::Whitespace(String::new());
+                        }
+                    }
+                }
+                
                 let mut resolved_unit = None;
                 let mut resolved_ctx_noun = None;
                 

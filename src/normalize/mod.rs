@@ -281,5 +281,18 @@ mod tests {
         let date3 = normalize_text("дата 28.06.2026");
         println!("test_smart_home_scenarios date3: {:?}", date3);
         assert!(has_text(&date3, "дата двадцять восьме червня дві тисячі двадцять шостого року"));
+
+        // Thousand multipliers
+        let mult1 = normalize_text("1.5к кг");
+        println!("test_smart_home_scenarios mult1: {:?}", mult1);
+        assert!(has_text(&mult1, "тисяча п'ятсот кілограмів"));
+
+        let mult2 = normalize_text("2.5 к кг");
+        println!("test_smart_home_scenarios mult2: {:?}", mult2);
+        assert!(has_text(&mult2, "дві тисячі п'ятсот кілограмів"));
+
+        let mult3 = normalize_text("1 к.");
+        println!("test_smart_home_scenarios mult3: {:?}", mult3);
+        assert!(has_text(&mult3, "тисяча"));
     }
 }
